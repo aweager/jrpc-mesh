@@ -22,6 +22,12 @@ go test -run TestName ./path/to/package
 
 # Lint (if golangci-lint is configured)
 golangci-lint run
+
+# Format all markdown documentation
+mdformat .
+
+## Format a single markdown file
+mdformat ./path/to/file.md
 ```
 
 ## Architecture
