@@ -120,3 +120,15 @@ func (h *Handler) findRoute(method string) *jsonrpc2.Conn {
 
 	return bestConn
 }
+
+// RemoveRoutesForConn removes all routes registered to the given connection.
+func (h *Handler) RemoveRoutesForConn(conn *jsonrpc2.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for prefix, c := range h.routes {
+		if c == conn {
+			delete(h.routes, prefix)
+		}
+	}
+}

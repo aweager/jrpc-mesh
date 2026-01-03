@@ -231,3 +231,87 @@ func TestHandle_RoutesToBackend(t *testing.T) {
 		t.Errorf("expected echoed=hello, got %v", result)
 	}
 }
+
+func TestRemoveRoutesForConn(t *testing.T) {
+	conn1 := &jsonrpc2.Conn{}
+	conn2 := &jsonrpc2.Conn{}
+
+	h := &Handler{
+		routes: map[string]*jsonrpc2.Conn{
+			"svc1/":       conn1,
+			"svc1/sub/":   conn1,
+			"svc2/":       conn2,
+			"other/":      conn2,
+		},
+	}
+
+	// Remove routes for conn1
+	h.RemoveRoutesForConn(conn1)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	// conn1 routes should be gone
+	if _, ok := h.routes["svc1/"]; ok {
+		t.Error("svc1/ should have been removed")
+	}
+	if _, ok := h.routes["svc1/sub/"]; ok {
+		t.Error("svc1/sub/ should have been removed")
+	}
+
+	// conn2 routes should remain
+	if _, ok := h.routes["svc2/"]; !ok {
+		t.Error("svc2/ should still exist")
+	}
+	if _, ok := h.routes["other/"]; !ok {
+		t.Error("other/ should still exist")
+	}
+}
+
+func TestRemoveRoutesForConn_OnDisconnect(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	// Register routes
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"myservice/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes failed: %v", err)
+	}
+
+	// Verify route exists
+	h.mu.RLock()
+	if len(h.routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(h.routes))
+	}
+	h.mu.RUnlock()
+
+	// Close the client connection
+	client.Close()
+
+	// The testConn cleanup will close connections, but we need to simulate
+	// what handleConnection does - call RemoveRoutesForConn
+	// In a real scenario, this is called after DisconnectNotify returns
+
+	// For this test, we directly verify RemoveRoutesForConn works
+	// by getting the server-side connection and removing its routes
+	h.mu.RLock()
+	var serverConn *jsonrpc2.Conn
+	for _, c := range h.routes {
+		serverConn = c
+		break
+	}
+	h.mu.RUnlock()
+
+	if serverConn != nil {
+		h.RemoveRoutesForConn(serverConn)
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.routes) != 0 {
+		t.Errorf("expected 0 routes after cleanup, got %d", len(h.routes))
+	}
+}
