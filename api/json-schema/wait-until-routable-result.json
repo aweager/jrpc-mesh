@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/wait-until-routable-result.json",
+  "title": "awe.proxy/WaitUntilRoutable Result",
+  "description": "Result for the awe.proxy/WaitUntilRoutable method",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}

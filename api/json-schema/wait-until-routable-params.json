@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/wait-until-routable-params.json",
+  "title": "awe.proxy/WaitUntilRoutable Params",
+  "description": "Request parameters for the awe.proxy/WaitUntilRoutable method",
+  "type": "object",
+  "properties": {
+    "method": {
+      "type": "string",
+      "description": "The method name to wait for"
+    },
+    "timeout_s": {
+      "type": "number",
+      "description": "Timeout in seconds",
+      "default": 5.0
+    }
+  },
+  "required": ["method"],
+  "additionalProperties": false
+}

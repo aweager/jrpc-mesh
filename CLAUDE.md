@@ -4,16 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-jrpc-mesh is a simple JSON RPC service mesh intended for local dev box services. Written in Go.
+jrpc-mesh is a simple JSON RPC service mesh and reverse proxy intended for local dev box services. Written in Go.
 
 ## Development Commands
 
 *Note: This is a newly initialized project. Commands will be added as the project develops.*
 
 ```bash
-# Initialize Go module (if not done)
-go mod init github.com/aweager/jrpc-mesh
-
 # Build
 go build ./...
 
@@ -29,4 +26,7 @@ golangci-lint run
 
 ## Architecture
 
-*To be documented as the project develops.*
+The reverse proxy listens on a unix domain socket. Services connect to the
+socket and inform the proxy of their routes using the
+`awe.proxy/UpdateRoutes` method. Any RPC whose method begins with `awe.proxy/`
+will be handled by the proxy itself. All other messages are routed to the appropriate backend.
