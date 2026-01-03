@@ -2,13 +2,23 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
 
 	"github.com/sourcegraph/jsonrpc2"
 )
 
 // Handler implements jsonrpc2.Handler for the jrpc-mesh proxy.
-type Handler struct{}
+type Handler struct {
+	mu     sync.RWMutex
+	routes map[string]*jsonrpc2.Conn // prefix -> connection
+}
+
+// UpdateRoutesParams defines the parameters for awe.proxy/UpdateRoutes.
+type UpdateRoutesParams struct {
+	Prefixes []string `json:"prefixes"`
+}
 
 // Handle processes incoming JSON RPC requests.
 func (h *Handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
@@ -18,15 +28,36 @@ func (h *Handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2
 		return
 	}
 
-	// TODO: Route to appropriate backend service
-	if req.Notif {
+	// Route to appropriate backend service
+	backend := h.findRoute(req.Method)
+	if backend == nil {
+		if !req.Notif {
+			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+				Code:    jsonrpc2.CodeMethodNotFound,
+				Message: "no backend registered for method: " + req.Method,
+			})
+		}
 		return
 	}
 
-	conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-		Code:    jsonrpc2.CodeMethodNotFound,
-		Message: "no backend registered for method: " + req.Method,
-	})
+	if req.Notif {
+		backend.Notify(ctx, req.Method, req.Params)
+		return
+	}
+
+	var result json.RawMessage
+	if err := backend.Call(ctx, req.Method, req.Params, &result); err != nil {
+		if rpcErr, ok := err.(*jsonrpc2.Error); ok {
+			conn.ReplyWithError(ctx, req.ID, rpcErr)
+		} else {
+			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+				Code:    jsonrpc2.CodeInternalError,
+				Message: err.Error(),
+			})
+		}
+		return
+	}
+	conn.Reply(ctx, req.ID, result)
 }
 
 func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
@@ -47,9 +78,45 @@ func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, re
 }
 
 func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-	// TODO: Implement route registration
-	if req.Notif {
+	var params UpdateRoutesParams
+	if err := json.Unmarshal(*req.Params, &params); err != nil {
+		if !req.Notif {
+			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+				Code:    jsonrpc2.CodeInvalidParams,
+				Message: "invalid params: " + err.Error(),
+			})
+		}
 		return
 	}
-	conn.Reply(ctx, req.ID, map[string]string{"status": "ok"})
+
+	h.mu.Lock()
+	if h.routes == nil {
+		h.routes = make(map[string]*jsonrpc2.Conn)
+	}
+	for _, prefix := range params.Prefixes {
+		h.routes[prefix] = conn
+	}
+	h.mu.Unlock()
+
+	if !req.Notif {
+		conn.Reply(ctx, req.ID, struct{}{})
+	}
+}
+
+// findRoute returns the connection for the longest matching prefix, or nil if none match.
+func (h *Handler) findRoute(method string) *jsonrpc2.Conn {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	var bestPrefix string
+	var bestConn *jsonrpc2.Conn
+
+	for prefix, conn := range h.routes {
+		if strings.HasPrefix(method, prefix) && len(prefix) > len(bestPrefix) {
+			bestPrefix = prefix
+			bestConn = conn
+		}
+	}
+
+	return bestConn
 }

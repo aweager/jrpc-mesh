@@ -1,0 +1,233 @@
+package internal
+
+import (
+	"context"
+	"encoding/json"
+	"net"
+	"testing"
+
+	"github.com/sourcegraph/jsonrpc2"
+)
+
+func TestFindRoute_NoRoutes(t *testing.T) {
+	h := &Handler{}
+	if got := h.findRoute("foo/bar"); got != nil {
+		t.Errorf("findRoute() = %v, want nil", got)
+	}
+}
+
+func TestFindRoute_ExactMatch(t *testing.T) {
+	conn := &jsonrpc2.Conn{}
+	h := &Handler{
+		routes: map[string]*jsonrpc2.Conn{
+			"foo/": conn,
+		},
+	}
+	if got := h.findRoute("foo/bar"); got != conn {
+		t.Errorf("findRoute() = %v, want %v", got, conn)
+	}
+}
+
+func TestFindRoute_LongestPrefixWins(t *testing.T) {
+	shortConn := &jsonrpc2.Conn{}
+	longConn := &jsonrpc2.Conn{}
+	h := &Handler{
+		routes: map[string]*jsonrpc2.Conn{
+			"foo/":     shortConn,
+			"foo/bar/": longConn,
+		},
+	}
+
+	// Should match longer prefix
+	if got := h.findRoute("foo/bar/baz"); got != longConn {
+		t.Errorf("findRoute(foo/bar/baz) = %v, want longConn", got)
+	}
+
+	// Should match shorter prefix when longer doesn't match
+	if got := h.findRoute("foo/qux"); got != shortConn {
+		t.Errorf("findRoute(foo/qux) = %v, want shortConn", got)
+	}
+}
+
+func TestFindRoute_NoMatch(t *testing.T) {
+	conn := &jsonrpc2.Conn{}
+	h := &Handler{
+		routes: map[string]*jsonrpc2.Conn{
+			"foo/": conn,
+		},
+	}
+	if got := h.findRoute("bar/baz"); got != nil {
+		t.Errorf("findRoute(bar/baz) = %v, want nil", got)
+	}
+}
+
+// testConn creates a pair of connected jsonrpc2.Conn for testing.
+// Returns (client, server) connections.
+func testConn(t *testing.T, handler jsonrpc2.Handler) (*jsonrpc2.Conn, *jsonrpc2.Conn) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+
+	ctx := context.Background()
+	client := jsonrpc2.NewConn(
+		ctx,
+		jsonrpc2.NewBufferedStream(clientConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return nil, nil
+		}),
+	)
+	server := jsonrpc2.NewConn(
+		ctx,
+		jsonrpc2.NewBufferedStream(serverConn, jsonrpc2.VSCodeObjectCodec{}),
+		handler,
+	)
+
+	t.Cleanup(func() {
+		client.Close()
+		server.Close()
+	})
+
+	return client, server
+}
+
+func TestUpdateRoutes_RegistersPrefixes(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"svc1/", "svc2/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes failed: %v", err)
+	}
+
+	// Verify routes were registered
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.routes) != 2 {
+		t.Errorf("expected 2 routes, got %d", len(h.routes))
+	}
+	if _, ok := h.routes["svc1/"]; !ok {
+		t.Error("svc1/ not registered")
+	}
+	if _, ok := h.routes["svc2/"]; !ok {
+		t.Error("svc2/ not registered")
+	}
+}
+
+func TestUpdateRoutes_InvalidParams(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/UpdateRoutes", "not an object", &result)
+	if err == nil {
+		t.Fatal("expected error for invalid params")
+	}
+
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeInvalidParams {
+		t.Errorf("expected CodeInvalidParams, got %d", rpcErr.Code)
+	}
+}
+
+func TestHandle_UnknownProxyMethod(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/UnknownMethod", nil, &result)
+	if err == nil {
+		t.Fatal("expected error for unknown proxy method")
+	}
+
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeMethodNotFound {
+		t.Errorf("expected CodeMethodNotFound, got %d", rpcErr.Code)
+	}
+}
+
+func TestHandle_NoBackendRegistered(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+	err := client.Call(context.Background(), "unknown/method", nil, &result)
+	if err == nil {
+		t.Fatal("expected error for unroutable method")
+	}
+
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeMethodNotFound {
+		t.Errorf("expected CodeMethodNotFound, got %d", rpcErr.Code)
+	}
+}
+
+func TestHandle_RoutesToBackend(t *testing.T) {
+	h := &Handler{}
+
+	// Create the proxy connection (client talks to proxy)
+	proxyClient, _ := testConn(t, h)
+
+	// Create a backend connection that will handle routed requests
+	backendClientConn, backendServerConn := net.Pipe()
+	ctx := context.Background()
+
+	// Backend client (proxy's view of backend)
+	backendClient := jsonrpc2.NewConn(
+		ctx,
+		jsonrpc2.NewBufferedStream(backendClientConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return nil, nil
+		}),
+	)
+
+	// Backend server (the actual backend service)
+	backendServer := jsonrpc2.NewConn(
+		ctx,
+		jsonrpc2.NewBufferedStream(backendServerConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			if req.Method == "myservice/echo" {
+				var params map[string]string
+				if err := json.Unmarshal(*req.Params, &params); err != nil {
+					return nil, err
+				}
+				return map[string]string{"echoed": params["msg"]}, nil
+			}
+			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "not found"}
+		}),
+	)
+
+	t.Cleanup(func() {
+		backendClient.Close()
+		backendServer.Close()
+	})
+
+	// Register the backend's routes
+	h.mu.Lock()
+	h.routes = map[string]*jsonrpc2.Conn{
+		"myservice/": backendClient,
+	}
+	h.mu.Unlock()
+
+	// Now call through the proxy
+	var result map[string]string
+	err := proxyClient.Call(context.Background(), "myservice/echo", map[string]string{"msg": "hello"}, &result)
+	if err != nil {
+		t.Fatalf("routed call failed: %v", err)
+	}
+
+	if result["echoed"] != "hello" {
+		t.Errorf("expected echoed=hello, got %v", result)
+	}
+}
