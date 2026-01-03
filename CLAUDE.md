@@ -12,7 +12,7 @@ jrpc-mesh is a simple JSON RPC service mesh and reverse proxy intended for local
 
 ```bash
 # Build
-go build ./...
+make
 
 # Run tests
 go test ./...

@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/aweager/jrpc-mesh/internal"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
 const defaultSocketPath = "/tmp/jrpc-mesh.sock"
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
+
 	socketPath := defaultSocketPath
 	if len(os.Args) > 1 {
 		socketPath = os.Args[1]
@@ -21,16 +25,18 @@ func main() {
 
 	// Remove existing socket file if it exists
 	if err := os.RemoveAll(socketPath); err != nil {
-		log.Fatalf("Failed to remove existing socket: %v", err)
+		slog.Error("failed to remove existing socket", "error", err)
+		os.Exit(1)
 	}
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", socketPath, err)
+		slog.Error("failed to listen", "socket", socketPath, "error", err)
+		os.Exit(1)
 	}
 	defer listener.Close()
 
-	log.Printf("JSON RPC server listening on %s", socketPath)
+	slog.Info("JSON RPC server listening", "socket", socketPath)
 
 	// Handle graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,12 +47,12 @@ func main() {
 
 	go func() {
 		<-sigChan
-		log.Println("Shutting down...")
+		slog.Info("shutting down")
 		cancel()
 		listener.Close()
 	}()
 
-	handler := &Handler{}
+	handler := &internal.Handler{}
 
 	for {
 		conn, err := listener.Accept()
@@ -55,7 +61,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			default:
-				log.Printf("Failed to accept connection: %v", err)
+				slog.Error("failed to accept connection", "error", err)
 				continue
 			}
 		}
