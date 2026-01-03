@@ -70,14 +70,14 @@ func testConn(t *testing.T, handler jsonrpc2.Handler) (*jsonrpc2.Conn, *jsonrpc2
 	ctx := context.Background()
 	client := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(clientConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.NewBufferedStream(clientConn, NewlineCodec{}),
 		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			return nil, nil
 		}),
 	)
 	server := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(serverConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.NewBufferedStream(serverConn, NewlineCodec{}),
 		handler,
 	)
 
@@ -186,7 +186,7 @@ func TestHandle_RoutesToBackend(t *testing.T) {
 	// Backend client (proxy's view of backend)
 	backendClient := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(backendClientConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.NewBufferedStream(backendClientConn, NewlineCodec{}),
 		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			return nil, nil
 		}),
@@ -195,7 +195,7 @@ func TestHandle_RoutesToBackend(t *testing.T) {
 	// Backend server (the actual backend service)
 	backendServer := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(backendServerConn, jsonrpc2.VSCodeObjectCodec{}),
+		jsonrpc2.NewBufferedStream(backendServerConn, NewlineCodec{}),
 		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			if req.Method == "myservice/echo" {
 				var params map[string]string

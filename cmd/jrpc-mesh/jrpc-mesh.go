@@ -71,7 +71,7 @@ func main() {
 }
 
 func handleConnection(ctx context.Context, conn net.Conn, handler jsonrpc2.Handler) {
-	stream := jsonrpc2.NewBufferedStream(conn, jsonrpc2.VSCodeObjectCodec{})
+	stream := jsonrpc2.NewBufferedStream(conn, internal.NewlineCodec{})
 	rpcConn := jsonrpc2.NewConn(ctx, stream, handler)
 	<-rpcConn.DisconnectNotify()
 }
