@@ -315,3 +315,150 @@ func TestRemoveRoutesForConn_OnDisconnect(t *testing.T) {
 		t.Errorf("expected 0 routes after cleanup, got %d", len(h.routes))
 	}
 }
+
+// testService represents a service connected to the proxy for integration testing.
+type testService struct {
+	client *jsonrpc2.Conn // service's view - used to call other services via proxy
+	server *jsonrpc2.Conn // proxy's view - receives routed calls from other services
+}
+
+// newTestService creates a service that connects to the proxy, registers routes,
+// and handles incoming requests with the provided handler.
+func newTestService(t *testing.T, h *Handler, prefixes []string, handler jsonrpc2.Handler) *testService {
+	t.Helper()
+
+	// Create pipe: serviceEnd <-> proxyEnd
+	serviceEnd, proxyEnd := net.Pipe()
+	ctx := context.Background()
+
+	// Proxy's view of this connection - handles UpdateRoutes, routes calls
+	proxyConn := jsonrpc2.NewConn(
+		ctx,
+		jsonrpc2.NewBufferedStream(proxyEnd, NewlineCodec{}),
+		h,
+	)
+
+	// Service's view - handles incoming routed calls
+	serviceConn := jsonrpc2.NewConn(
+		ctx,
+		jsonrpc2.NewBufferedStream(serviceEnd, NewlineCodec{}),
+		handler,
+	)
+
+	t.Cleanup(func() {
+		serviceConn.Close()
+		proxyConn.Close()
+	})
+
+	// Register routes for this service
+	if len(prefixes) > 0 {
+		var result struct{}
+		err := serviceConn.Call(ctx, "awe.proxy/UpdateRoutes", map[string]any{
+			"prefixes": prefixes,
+		}, &result)
+		if err != nil {
+			t.Fatalf("failed to register routes: %v", err)
+		}
+	}
+
+	return &testService{
+		client: serviceConn, // service uses this to call other services
+		server: proxyConn,   // stored in routes, used for routing TO this service
+	}
+}
+
+func TestIntegration_TwoServicesCallEachOther(t *testing.T) {
+	h := &Handler{}
+
+	// Create Service A - echoes with "A:" prefix
+	serviceA := newTestService(t, h, []string{"serviceA/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			if req.Method == "serviceA/echo" {
+				var params map[string]string
+				if err := json.Unmarshal(*req.Params, &params); err != nil {
+					return nil, err
+				}
+				return map[string]string{"response": "A:" + params["msg"]}, nil
+			}
+			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "not found"}
+		},
+	))
+
+	// Create Service B - echoes with "B:" prefix
+	serviceB := newTestService(t, h, []string{"serviceB/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			if req.Method == "serviceB/echo" {
+				var params map[string]string
+				if err := json.Unmarshal(*req.Params, &params); err != nil {
+					return nil, err
+				}
+				return map[string]string{"response": "B:" + params["msg"]}, nil
+			}
+			return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "not found"}
+		},
+	))
+
+	// Service A calls Service B
+	var resultB map[string]string
+	err := serviceA.client.Call(context.Background(), "serviceB/echo", map[string]string{"msg": "hello from A"}, &resultB)
+	if err != nil {
+		t.Fatalf("A -> B call failed: %v", err)
+	}
+	if resultB["response"] != "B:hello from A" {
+		t.Errorf("expected 'B:hello from A', got %q", resultB["response"])
+	}
+
+	// Service B calls Service A
+	var resultA map[string]string
+	err = serviceB.client.Call(context.Background(), "serviceA/echo", map[string]string{"msg": "hello from B"}, &resultA)
+	if err != nil {
+		t.Fatalf("B -> A call failed: %v", err)
+	}
+	if resultA["response"] != "A:hello from B" {
+		t.Errorf("expected 'A:hello from B', got %q", resultA["response"])
+	}
+}
+
+func TestIntegration_RouteCleanupBetweenServices(t *testing.T) {
+	h := &Handler{}
+
+	// Create Service A
+	serviceA := newTestService(t, h, []string{"serviceA/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return map[string]string{"from": "A"}, nil
+		},
+	))
+
+	// Create Service B
+	serviceB := newTestService(t, h, []string{"serviceB/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return map[string]string{"from": "B"}, nil
+		},
+	))
+
+	// Service A calls Service B - should work
+	var result map[string]string
+	err := serviceA.client.Call(context.Background(), "serviceB/method", nil, &result)
+	if err != nil {
+		t.Fatalf("initial call failed: %v", err)
+	}
+
+	// Close Service B and clean up its routes
+	serviceB.server.Close()
+	serviceB.client.Close()
+	h.RemoveRoutesForConn(serviceB.server)
+
+	// Service A tries to call Service B again - should fail with method not found
+	err = serviceA.client.Call(context.Background(), "serviceB/method", nil, &result)
+	if err == nil {
+		t.Fatal("expected error after service B disconnected")
+	}
+
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeMethodNotFound {
+		t.Errorf("expected CodeMethodNotFound, got %d", rpcErr.Code)
+	}
+}

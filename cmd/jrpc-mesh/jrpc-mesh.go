@@ -72,7 +72,7 @@ func main() {
 
 func handleConnection(ctx context.Context, conn net.Conn, handler *internal.Handler) {
 	stream := jsonrpc2.NewBufferedStream(conn, internal.NewlineCodec{})
-	rpcConn := jsonrpc2.NewConn(ctx, stream, handler)
+	rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler))
 	<-rpcConn.DisconnectNotify()
 	handler.RemoveRoutesForConn(rpcConn)
 }
