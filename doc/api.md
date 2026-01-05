@@ -52,3 +52,20 @@ Request parameters example:
 `timeout_s` is optional, and defaults to `5.0`.
 
 This method returns an empty result.
+
+### awe.proxy/AddPeerProxy
+
+Instructs this proxy instance to peer with another proxy instance. Routes will
+be shared with the peer instance, and the peer will share routes with the local
+instance, via `awe.proxy/UpdateRoutes`, whenever the local routing table is
+updated on either side.
+
+Request parameters example:
+
+```json
+{
+    "socket": "/path/to/socket"
+}
+```
+
+This method returns an empty result.

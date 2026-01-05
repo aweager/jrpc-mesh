@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/add-peer-proxy-params.json",
+  "title": "awe.proxy/AddPeerProxy Params",
+  "description": "Request parameters for the awe.proxy/AddPeerProxy method",
+  "type": "object",
+  "properties": {
+    "socket": {
+      "type": "string",
+      "description": "Path to the Unix domain socket of the peer proxy instance"
+    }
+  },
+  "required": ["socket"],
+  "additionalProperties": false
+}
