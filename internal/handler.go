@@ -93,6 +93,19 @@ func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, r
 	if h.routes == nil {
 		h.routes = make(map[string]*jsonrpc2.Conn)
 	}
+	// Remove any existing prefixes for this connection that aren't in the new list
+	newPrefixes := make(map[string]struct{}, len(params.Prefixes))
+	for _, prefix := range params.Prefixes {
+		newPrefixes[prefix] = struct{}{}
+	}
+	for prefix, c := range h.routes {
+		if c == conn {
+			if _, keep := newPrefixes[prefix]; !keep {
+				delete(h.routes, prefix)
+			}
+		}
+	}
+	// Add/update the new prefixes
 	for _, prefix := range params.Prefixes {
 		h.routes[prefix] = conn
 	}

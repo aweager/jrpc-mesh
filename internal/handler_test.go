@@ -419,6 +419,171 @@ func TestIntegration_TwoServicesCallEachOther(t *testing.T) {
 	}
 }
 
+func TestUpdateRoutes_RemovesOldPrefixes(t *testing.T) {
+	h := &Handler{}
+	client, server := testConn(t, h)
+
+	// Register initial routes
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"svc1/", "svc2/", "svc3/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes failed: %v", err)
+	}
+
+	// Verify all 3 routes are registered
+	h.mu.RLock()
+	if len(h.routes) != 3 {
+		t.Fatalf("expected 3 routes, got %d", len(h.routes))
+	}
+	h.mu.RUnlock()
+
+	// Update routes - keep svc1/, add svc4/, remove svc2/ and svc3/
+	err = client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"svc1/", "svc4/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes (second call) failed: %v", err)
+	}
+
+	// Verify the correct routes exist
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.routes) != 2 {
+		t.Errorf("expected 2 routes, got %d", len(h.routes))
+	}
+	if _, ok := h.routes["svc1/"]; !ok {
+		t.Error("svc1/ should still be registered")
+	}
+	if _, ok := h.routes["svc4/"]; !ok {
+		t.Error("svc4/ should be registered")
+	}
+	if _, ok := h.routes["svc2/"]; ok {
+		t.Error("svc2/ should have been removed")
+	}
+	if _, ok := h.routes["svc3/"]; ok {
+		t.Error("svc3/ should have been removed")
+	}
+
+	// Verify the routes point to the correct connection (server-side conn)
+	if h.routes["svc1/"] != server {
+		t.Error("svc1/ should be registered to the server connection")
+	}
+	if h.routes["svc4/"] != server {
+		t.Error("svc4/ should be registered to the server connection")
+	}
+}
+
+func TestUpdateRoutes_DoesNotAffectOtherConnections(t *testing.T) {
+	h := &Handler{}
+
+	// Create two separate connections
+	client1, server1 := testConn(t, h)
+	client2, server2 := testConn(t, h)
+
+	var result struct{}
+
+	// Connection 1 registers some routes
+	err := client1.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"conn1-svc1/", "conn1-svc2/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes for conn1 failed: %v", err)
+	}
+
+	// Connection 2 registers some routes
+	err = client2.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"conn2-svc1/", "conn2-svc2/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes for conn2 failed: %v", err)
+	}
+
+	// Verify all 4 routes exist
+	h.mu.RLock()
+	if len(h.routes) != 4 {
+		t.Fatalf("expected 4 routes, got %d", len(h.routes))
+	}
+	h.mu.RUnlock()
+
+	// Connection 1 updates its routes (removing conn1-svc2/)
+	err = client1.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"conn1-svc1/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes update for conn1 failed: %v", err)
+	}
+
+	// Verify conn1's old route is gone but conn2's routes are untouched
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.routes) != 3 {
+		t.Errorf("expected 3 routes, got %d", len(h.routes))
+	}
+
+	// Connection 1's routes
+	if _, ok := h.routes["conn1-svc1/"]; !ok {
+		t.Error("conn1-svc1/ should still be registered")
+	}
+	if _, ok := h.routes["conn1-svc2/"]; ok {
+		t.Error("conn1-svc2/ should have been removed")
+	}
+
+	// Connection 2's routes should be unchanged
+	if c, ok := h.routes["conn2-svc1/"]; !ok || c != server2 {
+		t.Error("conn2-svc1/ should still be registered to server2")
+	}
+	if c, ok := h.routes["conn2-svc2/"]; !ok || c != server2 {
+		t.Error("conn2-svc2/ should still be registered to server2")
+	}
+
+	// Verify ownership
+	if h.routes["conn1-svc1/"] != server1 {
+		t.Error("conn1-svc1/ should be registered to server1")
+	}
+}
+
+func TestUpdateRoutes_EmptyPrefixesRemovesAll(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+
+	// Register some routes
+	err := client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"svc1/", "svc2/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes failed: %v", err)
+	}
+
+	// Verify routes exist
+	h.mu.RLock()
+	if len(h.routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(h.routes))
+	}
+	h.mu.RUnlock()
+
+	// Update with empty prefixes - should remove all routes for this connection
+	err = client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes (empty) failed: %v", err)
+	}
+
+	// Verify all routes are gone
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if len(h.routes) != 0 {
+		t.Errorf("expected 0 routes after empty update, got %d", len(h.routes))
+	}
+}
+
 func TestIntegration_RouteCleanupBetweenServices(t *testing.T) {
 	h := &Handler{}
 
