@@ -5,19 +5,37 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
 )
 
+// CodeTimeout is the application-level error code for timeout errors.
+const CodeTimeout = 1
+
 // Handler implements jsonrpc2.Handler for the jrpc-mesh proxy.
 type Handler struct {
-	mu     sync.RWMutex
-	routes map[string]*jsonrpc2.Conn // prefix -> connection
+	mu         sync.RWMutex
+	routes     map[string]*jsonrpc2.Conn // prefix -> connection
+	routesCond *sync.Cond                // broadcast when routes change
 }
 
 // UpdateRoutesParams defines the parameters for awe.proxy/UpdateRoutes.
 type UpdateRoutesParams struct {
 	Prefixes []string `json:"prefixes"`
+}
+
+// WaitUntilRoutableParams defines the parameters for awe.proxy/WaitUntilRoutable.
+type WaitUntilRoutableParams struct {
+	Method   string   `json:"method"`
+	TimeoutS *float64 `json:"timeout_s,omitempty"`
+}
+
+// ensureCond initializes the routes condition variable if needed.
+func (h *Handler) ensureCond() {
+	if h.routesCond == nil {
+		h.routesCond = sync.NewCond(&h.mu)
+	}
 }
 
 // Handle processes incoming JSON RPC requests.
@@ -66,6 +84,8 @@ func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, re
 	switch method {
 	case "UpdateRoutes":
 		h.handleUpdateRoutes(ctx, conn, req)
+	case "WaitUntilRoutable":
+		h.handleWaitUntilRoutable(ctx, conn, req)
 	default:
 		if req.Notif {
 			return
@@ -90,6 +110,7 @@ func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, r
 	}
 
 	h.mu.Lock()
+	h.ensureCond()
 	if h.routes == nil {
 		h.routes = make(map[string]*jsonrpc2.Conn)
 	}
@@ -109,6 +130,7 @@ func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, r
 	for _, prefix := range params.Prefixes {
 		h.routes[prefix] = conn
 	}
+	h.routesCond.Broadcast()
 	h.mu.Unlock()
 
 	if !req.Notif {
@@ -144,4 +166,116 @@ func (h *Handler) RemoveRoutesForConn(conn *jsonrpc2.Conn) {
 			delete(h.routes, prefix)
 		}
 	}
+}
+
+func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+	if req.Notif {
+		return
+	}
+
+	var params WaitUntilRoutableParams
+	if err := json.Unmarshal(*req.Params, &params); err != nil {
+		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInvalidParams,
+			Message: "invalid params: " + err.Error(),
+		})
+		return
+	}
+
+	if params.Method == "" {
+		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInvalidParams,
+			Message: "method is required",
+		})
+		return
+	}
+
+	// Default timeout is 5.0 seconds
+	timeoutS := 5.0
+	if params.TimeoutS != nil {
+		timeoutS = *params.TimeoutS
+	}
+	timeout := time.Duration(timeoutS * float64(time.Second))
+
+	// Fast path: check if already routable
+	if h.findRoute(params.Method) != nil {
+		conn.Reply(ctx, req.ID, struct{}{})
+		return
+	}
+
+	// Set up timeout
+	deadline := time.Now().Add(timeout)
+	timedOut := false
+
+	// Start a goroutine that will broadcast when timeout expires
+	// to wake up the waiting goroutine
+	done := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			h.mu.Lock()
+			timedOut = true
+			h.ensureCond()
+			h.routesCond.Broadcast()
+			h.mu.Unlock()
+		case <-done:
+		case <-ctx.Done():
+			h.mu.Lock()
+			h.ensureCond()
+			h.routesCond.Broadcast()
+			h.mu.Unlock()
+		}
+	}()
+	defer close(done)
+
+	// Wait loop
+	h.mu.Lock()
+	h.ensureCond()
+	for {
+		// Check if routable (need to check under lock for consistency with Wait)
+		if h.findRouteUnlocked(params.Method) != nil {
+			h.mu.Unlock()
+			conn.Reply(ctx, req.ID, struct{}{})
+			return
+		}
+
+		// Check timeout
+		if timedOut || time.Now().After(deadline) {
+			h.mu.Unlock()
+			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+				Code:    CodeTimeout,
+				Message: "timeout waiting for method to become routable: " + params.Method,
+			})
+			return
+		}
+
+		// Check context
+		if ctx.Err() != nil {
+			h.mu.Unlock()
+			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+				Code:    jsonrpc2.CodeInternalError,
+				Message: "context cancelled",
+			})
+			return
+		}
+
+		h.routesCond.Wait()
+	}
+}
+
+// findRouteUnlocked is like findRoute but assumes the lock is already held.
+func (h *Handler) findRouteUnlocked(method string) *jsonrpc2.Conn {
+	var bestPrefix string
+	var bestConn *jsonrpc2.Conn
+
+	for prefix, conn := range h.routes {
+		if strings.HasPrefix(method, prefix) && len(prefix) > len(bestPrefix) {
+			bestPrefix = prefix
+			bestConn = conn
+		}
+	}
+
+	return bestConn
 }

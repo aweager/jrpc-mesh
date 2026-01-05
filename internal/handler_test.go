@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
 )
@@ -625,5 +626,159 @@ func TestIntegration_RouteCleanupBetweenServices(t *testing.T) {
 	}
 	if rpcErr.Code != jsonrpc2.CodeMethodNotFound {
 		t.Errorf("expected CodeMethodNotFound, got %d", rpcErr.Code)
+	}
+}
+
+func TestWaitUntilRoutable_AlreadyRoutable(t *testing.T) {
+	h := &Handler{}
+
+	// First, register a route
+	client1, _ := testConn(t, h)
+	var result struct{}
+	err := client1.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"myservice/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes failed: %v", err)
+	}
+
+	// Now another client waits for that method - should return immediately
+	client2, _ := testConn(t, h)
+	err = client2.Call(context.Background(), "awe.proxy/WaitUntilRoutable", map[string]any{
+		"method":    "myservice/DoSomething",
+		"timeout_s": 1.0,
+	}, &result)
+	if err != nil {
+		t.Fatalf("WaitUntilRoutable failed: %v", err)
+	}
+}
+
+func TestWaitUntilRoutable_WaitsForRoute(t *testing.T) {
+	h := &Handler{}
+
+	client1, _ := testConn(t, h)
+	client2, _ := testConn(t, h)
+
+	// Start waiting in a goroutine
+	waitDone := make(chan error, 1)
+	go func() {
+		var result struct{}
+		err := client1.Call(context.Background(), "awe.proxy/WaitUntilRoutable", map[string]any{
+			"method":    "myservice/DoSomething",
+			"timeout_s": 5.0,
+		}, &result)
+		waitDone <- err
+	}()
+
+	// Give it a moment to start waiting
+	time.Sleep(50 * time.Millisecond)
+
+	// Now register the route
+	var result struct{}
+	err := client2.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"myservice/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("UpdateRoutes failed: %v", err)
+	}
+
+	// Wait should complete successfully
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("WaitUntilRoutable failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitUntilRoutable did not return after route was registered")
+	}
+}
+
+func TestWaitUntilRoutable_Timeout(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/WaitUntilRoutable", map[string]any{
+		"method":    "nonexistent/method",
+		"timeout_s": 0.1, // 100ms timeout
+	}, &result)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != CodeTimeout {
+		t.Errorf("expected CodeTimeout (%d), got %d", CodeTimeout, rpcErr.Code)
+	}
+}
+
+func TestWaitUntilRoutable_DefaultTimeout(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	start := time.Now()
+
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/WaitUntilRoutable", map[string]any{
+		"method": "nonexistent/method",
+		// No timeout_s specified - should default to 5.0
+	}, &result)
+
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	// Should have taken approximately 5 seconds (allow some tolerance)
+	if elapsed < 4*time.Second || elapsed > 6*time.Second {
+		t.Errorf("expected ~5s timeout, got %v", elapsed)
+	}
+
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != CodeTimeout {
+		t.Errorf("expected CodeTimeout (%d), got %d", CodeTimeout, rpcErr.Code)
+	}
+}
+
+func TestWaitUntilRoutable_InvalidParams(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+
+	// Test with invalid JSON
+	err := client.Call(context.Background(), "awe.proxy/WaitUntilRoutable", "not an object", &result)
+	if err == nil {
+		t.Fatal("expected error for invalid params")
+	}
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeInvalidParams {
+		t.Errorf("expected CodeInvalidParams, got %d", rpcErr.Code)
+	}
+
+	// Test with missing method
+	err = client.Call(context.Background(), "awe.proxy/WaitUntilRoutable", map[string]any{
+		"timeout_s": 1.0,
+	}, &result)
+	if err == nil {
+		t.Fatal("expected error for missing method")
+	}
+	rpcErr, ok = err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeInvalidParams {
+		t.Errorf("expected CodeInvalidParams, got %d", rpcErr.Code)
 	}
 }
