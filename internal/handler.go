@@ -10,23 +10,9 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 )
 
-// CodeTimeout is the application-level error code for timeout errors.
-const CodeTimeout = 1
-
 // Handler implements jsonrpc2.Handler for the jrpc-mesh proxy.
 type Handler struct {
 	Routes RouteTable
-}
-
-// UpdateRoutesParams defines the parameters for awe.proxy/UpdateRoutes.
-type UpdateRoutesParams struct {
-	Prefixes []string `json:"prefixes"`
-}
-
-// WaitUntilRoutableParams defines the parameters for awe.proxy/WaitUntilRoutable.
-type WaitUntilRoutableParams struct {
-	Method   string   `json:"method"`
-	TimeoutS *float64 `json:"timeout_s,omitempty"`
 }
 
 // Handle processes incoming JSON RPC requests.
