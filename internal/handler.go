@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aweager/jrpc-mesh/pkg/mesh"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
@@ -84,7 +85,7 @@ func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, re
 }
 
 func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
-	var params UpdateRoutesParams
+	var params mesh.UpdateRoutesParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
 		if !req.Notif {
 			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
@@ -107,7 +108,7 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 		return
 	}
 
-	var params WaitUntilRoutableParams
+	var params mesh.WaitUntilRoutableParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
 		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInvalidParams,
@@ -135,7 +136,7 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 	if err != nil {
 		if errors.Is(err, ErrWaitTimeout) {
 			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-				Code:    CodeTimeout,
+				Code:    mesh.CodeTimeout,
 				Message: "timeout waiting for method to become routable: " + params.Method,
 			})
 		} else {
@@ -155,7 +156,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		return
 	}
 
-	var params AddPeerProxyParams
+	var params mesh.AddPeerProxyParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
 		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInvalidParams,
@@ -184,7 +185,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 
 	// Create JSON-RPC connection to peer
 	// The peer's UpdateRoutes calls will be handled by this handler
-	stream := jsonrpc2.NewBufferedStream(peerNetConn, NewlineCodec{})
+	stream := jsonrpc2.NewBufferedStream(peerNetConn, mesh.NewlineCodec{})
 	peerConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(h))
 
 	// Register peer connection
@@ -200,7 +201,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 
 	// Register ourselves as a peer with the remote proxy
 	// This will make the peer send us route updates and return its current routes
-	var peerRoutes RegisterAsPeerResult
+	var peerRoutes mesh.RegisterAsPeerResult
 	if err := peerConn.Call(ctx, "awe.proxy/RegisterAsPeer", nil, &peerRoutes); err != nil {
 		// Clean up on failure
 		h.peerMu.Lock()
@@ -268,7 +269,7 @@ func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn,
 	prefixes := h.Routes.GetPrefixesExcluding(exclude)
 
 	// Return our current routes
-	conn.Reply(ctx, req.ID, RegisterAsPeerResult{
+	conn.Reply(ctx, req.ID, mesh.RegisterAsPeerResult{
 		Prefixes: prefixes,
 	})
 }
@@ -301,7 +302,7 @@ func (h *Handler) sendRoutesToPeer(ctx context.Context, peer *jsonrpc2.Conn) {
 	prefixes := h.Routes.GetPrefixesExcluding(exclude)
 
 	// Send routes to peer (fire and forget - use Notify)
-	peer.Notify(ctx, "awe.proxy/UpdateRoutes", UpdateRoutesParams{
+	peer.Notify(ctx, "awe.proxy/UpdateRoutes", mesh.UpdateRoutesParams{
 		Prefixes: prefixes,
 	})
 }

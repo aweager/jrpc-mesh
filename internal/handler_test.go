@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aweager/jrpc-mesh/pkg/mesh"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
@@ -72,14 +73,14 @@ func testConn(t *testing.T, handler jsonrpc2.Handler) (*jsonrpc2.Conn, *jsonrpc2
 	ctx := context.Background()
 	client := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(clientConn, NewlineCodec{}),
+		jsonrpc2.NewBufferedStream(clientConn, mesh.NewlineCodec{}),
 		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			return nil, nil
 		}),
 	)
 	server := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(serverConn, NewlineCodec{}),
+		jsonrpc2.NewBufferedStream(serverConn, mesh.NewlineCodec{}),
 		handler,
 	)
 
@@ -188,7 +189,7 @@ func TestHandle_RoutesToBackend(t *testing.T) {
 	// Backend client (proxy's view of backend)
 	backendClient := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(backendClientConn, NewlineCodec{}),
+		jsonrpc2.NewBufferedStream(backendClientConn, mesh.NewlineCodec{}),
 		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			return nil, nil
 		}),
@@ -197,7 +198,7 @@ func TestHandle_RoutesToBackend(t *testing.T) {
 	// Backend server (the actual backend service)
 	backendServer := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(backendServerConn, NewlineCodec{}),
+		jsonrpc2.NewBufferedStream(backendServerConn, mesh.NewlineCodec{}),
 		jsonrpc2.HandlerWithError(func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			if req.Method == "myservice/echo" {
 				var params map[string]string
@@ -336,14 +337,14 @@ func newTestService(t *testing.T, h *Handler, prefixes []string, handler jsonrpc
 	// Proxy's view of this connection - handles UpdateRoutes, routes calls
 	proxyConn := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(proxyEnd, NewlineCodec{}),
+		jsonrpc2.NewBufferedStream(proxyEnd, mesh.NewlineCodec{}),
 		h,
 	)
 
 	// Service's view - handles incoming routed calls
 	serviceConn := jsonrpc2.NewConn(
 		ctx,
-		jsonrpc2.NewBufferedStream(serviceEnd, NewlineCodec{}),
+		jsonrpc2.NewBufferedStream(serviceEnd, mesh.NewlineCodec{}),
 		handler,
 	)
 
@@ -712,8 +713,8 @@ func TestWaitUntilRoutable_Timeout(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected jsonrpc2.Error, got %T", err)
 	}
-	if rpcErr.Code != CodeTimeout {
-		t.Errorf("expected CodeTimeout (%d), got %d", CodeTimeout, rpcErr.Code)
+	if rpcErr.Code != mesh.CodeTimeout {
+		t.Errorf("expected CodeTimeout (%d), got %d", mesh.CodeTimeout, rpcErr.Code)
 	}
 }
 
@@ -744,8 +745,8 @@ func TestWaitUntilRoutable_DefaultTimeout(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected jsonrpc2.Error, got %T", err)
 	}
-	if rpcErr.Code != CodeTimeout {
-		t.Errorf("expected CodeTimeout (%d), got %d", CodeTimeout, rpcErr.Code)
+	if rpcErr.Code != mesh.CodeTimeout {
+		t.Errorf("expected CodeTimeout (%d), got %d", mesh.CodeTimeout, rpcErr.Code)
 	}
 }
 
@@ -811,7 +812,7 @@ func testPeerProxy(t *testing.T) (string, *Handler, func()) {
 			if err != nil {
 				return // Listener closed
 			}
-			stream := jsonrpc2.NewBufferedStream(conn, NewlineCodec{})
+			stream := jsonrpc2.NewBufferedStream(conn, mesh.NewlineCodec{})
 			rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler))
 
 			connMu.Lock()

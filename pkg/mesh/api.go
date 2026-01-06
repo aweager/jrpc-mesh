@@ -1,4 +1,4 @@
-package internal
+package mesh
 
 // CodeTimeout is the application-level error code for timeout errors.
 const CodeTimeout = 1

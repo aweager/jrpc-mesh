@@ -1,4 +1,4 @@
-package internal
+package mesh
 
 import (
 	"bufio"
@@ -11,7 +11,7 @@ import (
 type NewlineCodec struct{}
 
 // WriteObject marshals obj to JSON and writes it followed by a newline.
-func (NewlineCodec) WriteObject(stream io.Writer, obj interface{}) error {
+func (NewlineCodec) WriteObject(stream io.Writer, obj any) error {
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return err
@@ -21,7 +21,7 @@ func (NewlineCodec) WriteObject(stream io.Writer, obj interface{}) error {
 }
 
 // ReadObject reads a newline-terminated line and unmarshals it as JSON.
-func (NewlineCodec) ReadObject(stream *bufio.Reader, v interface{}) error {
+func (NewlineCodec) ReadObject(stream *bufio.Reader, v any) error {
 	line, err := stream.ReadBytes('\n')
 	if err != nil {
 		return err
