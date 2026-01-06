@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -780,5 +781,316 @@ func TestWaitUntilRoutable_InvalidParams(t *testing.T) {
 	}
 	if rpcErr.Code != jsonrpc2.CodeInvalidParams {
 		t.Errorf("expected CodeInvalidParams, got %d", rpcErr.Code)
+	}
+}
+
+// testPeerProxy creates a proxy that listens on a Unix socket for peer connections.
+// Returns the socket path, the handler, and a cleanup function.
+func testPeerProxy(t *testing.T) (string, *Handler, func()) {
+	t.Helper()
+
+	// Create a temp socket file
+	socketPath := t.TempDir() + "/peer.sock"
+
+	handler := &Handler{}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("failed to listen on socket: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Track connections for cleanup
+	var connMu sync.Mutex
+	var connections []*jsonrpc2.Conn
+
+	// Accept connections in background
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return // Listener closed
+			}
+			stream := jsonrpc2.NewBufferedStream(conn, NewlineCodec{})
+			rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler))
+
+			connMu.Lock()
+			connections = append(connections, rpcConn)
+			connMu.Unlock()
+
+			go func() {
+				<-rpcConn.DisconnectNotify()
+				handler.Routes.RemoveConn(rpcConn)
+			}()
+		}
+	}()
+
+	cleanup := func() {
+		cancel()
+		listener.Close()
+		// Close all active connections
+		connMu.Lock()
+		for _, c := range connections {
+			c.Close()
+		}
+		connMu.Unlock()
+	}
+
+	return socketPath, handler, cleanup
+}
+
+func TestAddPeerProxy_InvalidParams(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+
+	// Test with invalid JSON
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", "not an object", &result)
+	if err == nil {
+		t.Fatal("expected error for invalid params")
+	}
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeInvalidParams {
+		t.Errorf("expected CodeInvalidParams, got %d", rpcErr.Code)
+	}
+
+	// Test with missing socket
+	err = client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{}, &result)
+	if err == nil {
+		t.Fatal("expected error for missing socket")
+	}
+	rpcErr, ok = err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeInvalidParams {
+		t.Errorf("expected CodeInvalidParams, got %d", rpcErr.Code)
+	}
+}
+
+func TestAddPeerProxy_InvalidSocket(t *testing.T) {
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": "/nonexistent/socket.sock",
+	}, &result)
+
+	if err == nil {
+		t.Fatal("expected error for invalid socket")
+	}
+	rpcErr, ok := err.(*jsonrpc2.Error)
+	if !ok {
+		t.Fatalf("expected jsonrpc2.Error, got %T", err)
+	}
+	if rpcErr.Code != jsonrpc2.CodeInternalError {
+		t.Errorf("expected CodeInternalError, got %d", rpcErr.Code)
+	}
+}
+
+func TestAddPeerProxy_ConnectsToPeer(t *testing.T) {
+	// Set up peer proxy
+	peerSocket, _, cleanup := testPeerProxy(t)
+	defer cleanup()
+
+	// Set up local proxy
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	// Connect to peer
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy failed: %v", err)
+	}
+
+	// Verify peer is registered
+	h.peerMu.RLock()
+	peerCount := len(h.peers)
+	h.peerMu.RUnlock()
+
+	if peerCount != 1 {
+		t.Errorf("expected 1 peer, got %d", peerCount)
+	}
+}
+
+func TestAddPeerProxy_SharesLocalRoutes(t *testing.T) {
+	// Set up peer proxy
+	peerSocket, peerHandler, cleanup := testPeerProxy(t)
+	defer cleanup()
+
+	// Set up local proxy with a service
+	h := &Handler{}
+	_ = newTestService(t, h, []string{"localService/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return map[string]string{"from": "local"}, nil
+		},
+	))
+
+	// Connect to peer via another client
+	client, _ := testConn(t, h)
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy failed: %v", err)
+	}
+
+	// Give time for routes to propagate
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify peer received the routes
+	peerHandler.Routes.mu.RLock()
+	_, hasLocalRoute := peerHandler.Routes.routes["localService/"]
+	peerHandler.Routes.mu.RUnlock()
+
+	if !hasLocalRoute {
+		t.Error("peer should have received localService/ route")
+	}
+}
+
+func TestAddPeerProxy_ReceivesPeerRoutes(t *testing.T) {
+	// Set up peer proxy with a service
+	peerSocket, peerHandler, cleanup := testPeerProxy(t)
+	defer cleanup()
+
+	// Register a route on the peer before connecting
+	peerService := newTestService(t, peerHandler, []string{"peerService/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return map[string]string{"from": "peer"}, nil
+		},
+	))
+
+	// Set up local proxy
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	// Connect to peer
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy failed: %v", err)
+	}
+
+	// The peer needs to notify us of its routes
+	// In this test setup, we simulate the peer sending UpdateRoutes
+	// by having the peer's service call UpdateRoutes again
+	err = peerService.client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
+		"prefixes": []string{"peerService/"},
+	}, &result)
+	if err != nil {
+		t.Fatalf("peer UpdateRoutes failed: %v", err)
+	}
+
+	// Give time for routes to propagate
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify local proxy received the peer's routes
+	h.Routes.mu.RLock()
+	_, hasPeerRoute := h.Routes.routes["peerService/"]
+	h.Routes.mu.RUnlock()
+
+	if !hasPeerRoute {
+		t.Error("local proxy should have received peerService/ route from peer")
+	}
+}
+
+func TestAddPeerProxy_PropagatesRouteChanges(t *testing.T) {
+	// Set up peer proxy
+	peerSocket, peerHandler, cleanup := testPeerProxy(t)
+	defer cleanup()
+
+	// Set up local proxy
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	// Connect to peer first
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy failed: %v", err)
+	}
+
+	// Now add a local service
+	_ = newTestService(t, h, []string{"newService/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return map[string]string{"from": "new"}, nil
+		},
+	))
+
+	// Give time for routes to propagate
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify peer received the new route
+	peerHandler.Routes.mu.RLock()
+	_, hasNewRoute := peerHandler.Routes.routes["newService/"]
+	peerHandler.Routes.mu.RUnlock()
+
+	if !hasNewRoute {
+		t.Error("peer should have received newService/ route after it was added")
+	}
+}
+
+func TestAddPeerProxy_CleanupOnDisconnect(t *testing.T) {
+	// Set up peer proxy
+	peerSocket, peerHandler, cleanup := testPeerProxy(t)
+
+	// Set up local proxy
+	h := &Handler{}
+	client, _ := testConn(t, h)
+
+	// Register a local service
+	_ = newTestService(t, h, []string{"localService/"}, jsonrpc2.HandlerWithError(
+		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+			return map[string]string{"from": "local"}, nil
+		},
+	))
+
+	// Connect to peer
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy failed: %v", err)
+	}
+
+	// Give time for routes to propagate
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify peer received the route
+	peerHandler.Routes.mu.RLock()
+	routeCountBefore := len(peerHandler.Routes.routes)
+	peerHandler.Routes.mu.RUnlock()
+
+	if routeCountBefore == 0 {
+		t.Fatal("peer should have received routes")
+	}
+
+	// Close the peer proxy
+	cleanup()
+
+	// Give time for disconnect to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify peer is removed from local proxy's peer list
+	h.peerMu.RLock()
+	peerCount := len(h.peers)
+	h.peerMu.RUnlock()
+
+	if peerCount != 0 {
+		t.Errorf("expected 0 peers after disconnect, got %d", peerCount)
 	}
 }

@@ -69,3 +69,26 @@ Request parameters example:
 ```
 
 This method returns an empty result.
+
+### awe.proxy/RegisterAsPeer
+
+Registers the calling connection as a peer proxy. This is called automatically
+by `AddPeerProxy` during the peering handshake. When registered as a peer, the
+connection will receive route updates via `awe.proxy/UpdateRoutes` notifications
+whenever the local routing table changes.
+
+This method takes no parameters.
+
+Result example:
+
+```json
+{
+    "prefixes": [
+        "local.service/",
+        "another.service/"
+    ]
+}
+```
+
+The result contains all currently registered route prefixes (excluding routes
+owned by other peer connections).

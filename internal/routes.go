@@ -15,9 +15,10 @@ var ErrWaitTimeout = errors.New("timeout waiting for method to become routable")
 
 // RouteTable manages prefix-based routing to JSON-RPC connections.
 type RouteTable struct {
-	mu     sync.RWMutex
-	cond   *sync.Cond
-	routes map[string]*jsonrpc2.Conn // prefix -> connection
+	mu              sync.RWMutex
+	cond            *sync.Cond
+	routes          map[string]*jsonrpc2.Conn // prefix -> connection
+	OnRoutesChanged func()                    // Called after routes are modified (outside lock)
 }
 
 // ensureCond initializes the condition variable if needed.
@@ -32,7 +33,6 @@ func (rt *RouteTable) ensureCond() {
 // for that connection that are not in the new list.
 func (rt *RouteTable) Update(conn *jsonrpc2.Conn, prefixes []string) {
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 
 	rt.ensureCond()
 	if rt.routes == nil {
@@ -58,6 +58,13 @@ func (rt *RouteTable) Update(conn *jsonrpc2.Conn, prefixes []string) {
 	}
 
 	rt.cond.Broadcast()
+	callback := rt.OnRoutesChanged
+	rt.mu.Unlock()
+
+	// Call callback outside the lock to allow it to read routes
+	if callback != nil {
+		callback()
+	}
 }
 
 // Lookup returns the connection for the longest matching prefix, or nil if none match.

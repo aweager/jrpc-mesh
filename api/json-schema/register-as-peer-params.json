@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/register-as-peer-params.json",
+  "title": "awe.proxy/RegisterAsPeer Params",
+  "description": "Request parameters for the awe.proxy/RegisterAsPeer method",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false
+}

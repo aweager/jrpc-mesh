@@ -18,3 +18,8 @@ type WaitUntilRoutableParams struct {
 type AddPeerProxyParams struct {
 	Socket string `json:"socket"`
 }
+
+// RegisterAsPeerResult contains the peer's current routes.
+type RegisterAsPeerResult struct {
+	Prefixes []string `json:"prefixes"`
+}

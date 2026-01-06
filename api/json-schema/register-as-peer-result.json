@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/register-as-peer-result.json",
+  "title": "awe.proxy/RegisterAsPeer Result",
+  "description": "Result for the awe.proxy/RegisterAsPeer method",
+  "type": "object",
+  "properties": {
+    "prefixes": {
+      "type": "array",
+      "description": "Currently registered route prefixes (excluding routes owned by peer connections)",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": ["prefixes"],
+  "additionalProperties": false
+}
