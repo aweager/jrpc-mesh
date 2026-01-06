@@ -13,3 +13,8 @@ type WaitUntilRoutableParams struct {
 	Method   string   `json:"method"`
 	TimeoutS *float64 `json:"timeout_s,omitempty"`
 }
+
+// AddPeerProxyParams defines the parameters for awe.proxy/AddPeerProxy.
+type AddPeerProxyParams struct {
+	Socket string `json:"socket"`
+}

@@ -95,6 +95,20 @@ func (rt *RouteTable) RemoveConn(conn *jsonrpc2.Conn) {
 	}
 }
 
+// GetPrefixesExcluding returns all registered prefixes except those owned by excluded connections.
+func (rt *RouteTable) GetPrefixesExcluding(exclude map[*jsonrpc2.Conn]bool) []string {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	var prefixes []string
+	for prefix, conn := range rt.routes {
+		if !exclude[conn] {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes
+}
+
 // WaitUntilRoutable blocks until the given method becomes routable or the timeout expires.
 // Returns nil on success, ErrWaitTimeout on timeout, or the context's error if cancelled.
 func (rt *RouteTable) WaitUntilRoutable(ctx context.Context, method string, timeout time.Duration) error {
