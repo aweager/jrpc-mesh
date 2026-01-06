@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/aweager/jrpc-mesh/internal"
+	"github.com/google/uuid"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
@@ -71,8 +72,12 @@ func main() {
 }
 
 func handleConnection(ctx context.Context, conn net.Conn, handler *internal.Handler) {
+	id := uuid.NewString()
+	slog.Info("new connection", "id", id)
+	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelInfo)
 	stream := jsonrpc2.NewBufferedStream(conn, internal.NewlineCodec{})
-	rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler))
+	rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler), jsonrpc2.LogMessages(logger))
 	<-rpcConn.DisconnectNotify()
+	slog.Info("connection stopped", "id", id)
 	handler.Routes.RemoveConn(rpcConn)
 }
