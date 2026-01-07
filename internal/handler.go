@@ -130,10 +130,17 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 	if params.TimeoutS != nil {
 		timeoutS = *params.TimeoutS
 	}
-	timeout := time.Duration(timeoutS * float64(time.Second))
 
-	// Create a context with timeout
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	var waitCtx context.Context
+	var cancel context.CancelFunc
+	if timeoutS > 0 {
+		// Create a context with timeout
+		timeout := time.Duration(timeoutS * float64(time.Second))
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		// Infinite timeout
+		waitCtx, cancel = context.WithCancel(ctx)
+	}
 	defer cancel()
 
 	err := h.Routes.WaitUntilRoutable(waitCtx, params.Method)

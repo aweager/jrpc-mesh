@@ -49,7 +49,8 @@ Request parameters example:
 }
 ```
 
-`timeout_s` is optional, and defaults to `5.0`.
+`timeout_s` is optional, and defaults to `5.0`. If it is negative, the RPC will
+have no timeout.
 
 This method returns an empty result.
 
