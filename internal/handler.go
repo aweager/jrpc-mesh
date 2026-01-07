@@ -29,108 +29,104 @@ func NewHandler() *Handler {
 	}
 }
 
-// Handle processes incoming JSON RPC requests.
-func (h *Handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+// HandleWithError processes incoming JSON RPC requests, returning the result or error.
+func (h *Handler) HandleWithError(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	// Handle proxy-specific methods
 	if strings.HasPrefix(req.Method, "awe.proxy/") {
-		h.handleProxyMethod(ctx, conn, req)
-		return
+		return h.handleProxyMethod(ctx, conn, req)
 	}
 
 	// Route to appropriate backend service
 	backend := h.Routes.Lookup(req.Method)
 	if backend == nil {
-		if !req.Notif {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeMethodNotFound,
-				Message: "no backend registered for method: " + req.Method,
-			})
+		if req.Notif {
+			return nil, nil
 		}
-		return
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeMethodNotFound,
+			Message: "no backend registered for method: " + req.Method,
+		}
 	}
 
 	if req.Notif {
 		backend.Notify(ctx, req.Method, req.Params)
-		return
+		return nil, nil
 	}
 
 	var result json.RawMessage
 	if err := backend.Call(ctx, req.Method, req.Params, &result); err != nil {
 		if rpcErr, ok := err.(*jsonrpc2.Error); ok {
-			conn.ReplyWithError(ctx, req.ID, rpcErr)
-		} else {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeInternalError,
-				Message: err.Error(),
-			})
+			return nil, rpcErr
 		}
-		return
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInternalError,
+			Message: err.Error(),
+		}
 	}
-	conn.Reply(ctx, req.ID, result)
+	return result, nil
 }
 
-func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	method := strings.TrimPrefix(req.Method, "awe.proxy/")
 
 	switch method {
 	case "UpdateRoutes":
-		h.handleUpdateRoutes(ctx, conn, req)
+		return h.handleUpdateRoutes(ctx, conn, req)
 	case "WaitUntilRoutable":
-		h.handleWaitUntilRoutable(ctx, conn, req)
+		return h.handleWaitUntilRoutable(ctx, conn, req)
 	case "AddPeerProxy":
-		h.handleAddPeerProxy(ctx, conn, req)
+		return h.handleAddPeerProxy(ctx, conn, req)
 	case "RegisterAsPeer":
-		h.handleRegisterAsPeer(ctx, conn, req)
+		return h.handleRegisterAsPeer(ctx, conn, req)
 	default:
 		if req.Notif {
-			return
+			return nil, nil
 		}
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeMethodNotFound,
 			Message: "unknown proxy method: " + req.Method,
-		})
+		}
 	}
 }
 
-func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	var params mesh.UpdateRoutesParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
-		if !req.Notif {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeInvalidParams,
-				Message: "invalid params: " + err.Error(),
-			})
+		if req.Notif {
+			return nil, nil
 		}
-		return
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInvalidParams,
+			Message: "invalid params: " + err.Error(),
+		}
 	}
 
 	h.Routes.Update(conn, params.Prefixes)
 
-	if !req.Notif {
-		conn.Reply(ctx, req.ID, struct{}{})
+	if req.Notif {
+		return nil, nil
 	}
+	return struct{}{}, nil
 }
 
-func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	if req.Notif {
-		return
+		return nil, nil
 	}
 
 	var params mesh.WaitUntilRoutableParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInvalidParams,
 			Message: "invalid params: " + err.Error(),
-		})
-		return
+		}
 	}
 
 	if params.Method == "" {
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInvalidParams,
 			Message: "method is required",
-		})
-		return
+		}
 	}
 
 	// Default timeout is 5.0 seconds
@@ -154,58 +150,53 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 	err := h.Routes.WaitUntilRoutable(waitCtx, params.Method)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+			return nil, &jsonrpc2.Error{
 				Code:    mesh.CodeTimeout,
 				Message: "timeout waiting for method to become routable: " + params.Method,
-			})
-		} else {
-			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-				Code:    jsonrpc2.CodeInternalError,
-				Message: err.Error(),
-			})
+			}
 		}
-		return
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInternalError,
+			Message: err.Error(),
+		}
 	}
 
-	conn.Reply(ctx, req.ID, struct{}{})
+	return struct{}{}, nil
 }
 
-func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	if req.Notif {
-		return
+		return nil, nil
 	}
 
 	var params mesh.AddPeerProxyParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInvalidParams,
 			Message: "invalid params: " + err.Error(),
-		})
-		return
+		}
 	}
 
 	if params.Socket == "" {
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInvalidParams,
 			Message: "socket is required",
-		})
-		return
+		}
 	}
 
 	// Connect to peer proxy socket
 	peerNetConn, err := net.Dial("unix", params.Socket)
 	if err != nil {
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInternalError,
 			Message: "failed to connect to peer: " + err.Error(),
-		})
-		return
+		}
 	}
 
 	// Create JSON-RPC connection to peer
 	// The peer's UpdateRoutes calls will be handled by this handler
 	stream := jsonrpc2.NewBufferedStream(peerNetConn, mesh.NewlineCodec{})
-	peerConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(h))
+	peerConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(h.HandleWithError)))
 
 	// Register peer connection
 	h.peerMu.Lock()
@@ -227,11 +218,10 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		delete(h.peers, peerConn)
 		h.peerMu.Unlock()
 		peerConn.Close()
-		conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeInternalError,
 			Message: "failed to register as peer: " + err.Error(),
-		})
-		return
+		}
 	}
 
 	// Store the peer's routes in our routing table
@@ -249,12 +239,12 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		h.Routes.RemoveConn(peerConn)
 	}()
 
-	conn.Reply(ctx, req.ID, struct{}{})
+	return struct{}{}, nil
 }
 
-func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	if req.Notif {
-		return
+		return nil, nil
 	}
 
 	// Register this connection as a peer
@@ -288,9 +278,9 @@ func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn,
 	prefixes := h.Routes.GetPrefixesExcluding(exclude)
 
 	// Return our current routes
-	conn.Reply(ctx, req.ID, mesh.RegisterAsPeerResult{
+	return mesh.RegisterAsPeerResult{
 		Prefixes: prefixes,
-	})
+	}, nil
 }
 
 // notifyPeers sends current local routes to all connected peers.
