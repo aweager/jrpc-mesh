@@ -32,7 +32,7 @@ func ToJsonRpc2Error(err error) error {
 
 	var data *json.RawMessage
 
-	dataBytes, marshalErr := json.Marshal(e)
+	dataBytes, marshalErr := json.Marshal(err)
 	if marshalErr != nil {
 		slog.Warn("failed to marshal ErrorWithCode", "errWithCode", errWithCode, "marshalErr", marshalErr)
 	} else {

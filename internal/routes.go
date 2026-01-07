@@ -2,16 +2,11 @@ package internal
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
 )
-
-// ErrWaitTimeout is returned when WaitUntilRoutable times out.
-var ErrWaitTimeout = errors.New("timeout waiting for method to become routable")
 
 // RouteTable manages prefix-based routing to JSON-RPC connections.
 type RouteTable struct {
@@ -116,35 +111,24 @@ func (rt *RouteTable) GetPrefixesExcluding(exclude map[*jsonrpc2.Conn]bool) []st
 	return prefixes
 }
 
-// WaitUntilRoutable blocks until the given method becomes routable or the timeout expires.
-// Returns nil on success, ErrWaitTimeout on timeout, or the context's error if cancelled.
-func (rt *RouteTable) WaitUntilRoutable(ctx context.Context, method string, timeout time.Duration) error {
+// WaitUntilRoutable blocks until the given method becomes routable or the context is cancelled.
+// Returns nil on success, or the context's error if cancelled.
+func (rt *RouteTable) WaitUntilRoutable(ctx context.Context, method string) error {
 	// Fast path: check if already routable
 	if rt.Lookup(method) != nil {
 		return nil
 	}
 
-	deadline := time.Now().Add(timeout)
-	timedOut := false
-
-	// Start a goroutine that will broadcast when timeout expires
+	// Start a goroutine that will broadcast when context is done
 	done := make(chan struct{})
 	go func() {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
 		select {
-		case <-timer.C:
-			rt.mu.Lock()
-			timedOut = true
-			rt.ensureCond()
-			rt.cond.Broadcast()
-			rt.mu.Unlock()
-		case <-done:
 		case <-ctx.Done():
 			rt.mu.Lock()
 			rt.ensureCond()
 			rt.cond.Broadcast()
 			rt.mu.Unlock()
+		case <-done:
 		}
 	}()
 	defer close(done)
@@ -156,11 +140,6 @@ func (rt *RouteTable) WaitUntilRoutable(ctx context.Context, method string, time
 		if rt.lookupUnlocked(method) != nil {
 			rt.mu.Unlock()
 			return nil
-		}
-
-		if timedOut || time.Now().After(deadline) {
-			rt.mu.Unlock()
-			return ErrWaitTimeout
 		}
 
 		if ctx.Err() != nil {

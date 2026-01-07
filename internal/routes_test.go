@@ -114,7 +114,10 @@ func TestRouteTable_WaitUntilRoutable_AlreadyRoutable(t *testing.T) {
 
 	rt.Update(conn, []string{"foo/"})
 
-	err := rt.WaitUntilRoutable(context.Background(), "foo/method", time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := rt.WaitUntilRoutable(ctx, "foo/method")
 	if err != nil {
 		t.Errorf("WaitUntilRoutable for existing route = %v, want nil", err)
 	}
@@ -124,9 +127,12 @@ func TestRouteTable_WaitUntilRoutable_BecomesRoutable(t *testing.T) {
 	rt := &RouteTable{}
 	conn := getTestConn(50)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.WaitUntilRoutable(context.Background(), "foo/method", 5*time.Second)
+		done <- rt.WaitUntilRoutable(ctx, "foo/method")
 	}()
 
 	// Give the goroutine time to start waiting
@@ -148,12 +154,15 @@ func TestRouteTable_WaitUntilRoutable_BecomesRoutable(t *testing.T) {
 func TestRouteTable_WaitUntilRoutable_Timeout(t *testing.T) {
 	rt := &RouteTable{}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
 	start := time.Now()
-	err := rt.WaitUntilRoutable(context.Background(), "foo/method", 100*time.Millisecond)
+	err := rt.WaitUntilRoutable(ctx, "foo/method")
 	elapsed := time.Since(start)
 
-	if err != ErrWaitTimeout {
-		t.Errorf("WaitUntilRoutable = %v, want ErrWaitTimeout", err)
+	if err != context.DeadlineExceeded {
+		t.Errorf("WaitUntilRoutable = %v, want context.DeadlineExceeded", err)
 	}
 	if elapsed < 100*time.Millisecond {
 		t.Errorf("WaitUntilRoutable returned too quickly: %v", elapsed)
@@ -170,7 +179,7 @@ func TestRouteTable_WaitUntilRoutable_ContextCancelled(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.WaitUntilRoutable(ctx, "foo/method", 5*time.Second)
+		done <- rt.WaitUntilRoutable(ctx, "foo/method")
 	}()
 
 	// Give the goroutine time to start waiting

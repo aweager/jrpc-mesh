@@ -132,9 +132,13 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 	}
 	timeout := time.Duration(timeoutS * float64(time.Second))
 
-	err := h.Routes.WaitUntilRoutable(ctx, params.Method, timeout)
+	// Create a context with timeout
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	err := h.Routes.WaitUntilRoutable(waitCtx, params.Method)
 	if err != nil {
-		if errors.Is(err, ErrWaitTimeout) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
 				Code:    mesh.CodeTimeout,
 				Message: "timeout waiting for method to become routable: " + params.Method,
