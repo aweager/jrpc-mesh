@@ -30,31 +30,6 @@ type Client struct {
 	cancel   context.CancelFunc
 }
 
-func (c *Client) handleRequest(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
-	var handler Handler
-	var service string
-	var method string
-	for candidateService, candidateHandler := range c.handlers {
-		candidateMethod, found := strings.CutPrefix(req.Method, candidateService+"/")
-		if found {
-			handler = candidateHandler
-			service = candidateService
-			method = candidateMethod
-			break
-		}
-	}
-
-	if handler == nil {
-		return nil, &jsonrpc2.Error{
-			Code:    jsonrpc2.CodeMethodNotFound,
-			Message: "Method not found",
-		}
-	}
-
-	result, err = handler.Handle(ctx, service, method, req.Params)
-	return result, ToJsonRpc2Error(err)
-}
-
 // Connect connects to the jrpc-mesh proxy and sets up the handler for incoming requests
 func Connect(socketPath string) (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,6 +113,31 @@ func (c *Client) Close() error {
 		return err
 	}
 	return nil
+}
+
+func (c *Client) handleRequest(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
+	var handler Handler
+	var service string
+	var method string
+	for candidateService, candidateHandler := range c.handlers {
+		candidateMethod, found := strings.CutPrefix(req.Method, candidateService+"/")
+		if found {
+			handler = candidateHandler
+			service = candidateService
+			method = candidateMethod
+			break
+		}
+	}
+
+	if handler == nil {
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeMethodNotFound,
+			Message: "Method not found",
+		}
+	}
+
+	result, err = handler.Handle(ctx, service, method, req.Params)
+	return result, ToJsonRpc2Error(err)
 }
 
 // reconnectLoop connects to the mesh at socketPath and retries until canceled.
