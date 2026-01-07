@@ -54,7 +54,7 @@ func main() {
 		listener.Close()
 	}()
 
-	handler := &internal.Handler{}
+	handler := internal.NewHandler()
 
 	for {
 		conn, err := listener.Accept()

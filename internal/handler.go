@@ -15,10 +15,18 @@ import (
 
 // Handler implements jsonrpc2.Handler for the jrpc-mesh proxy.
 type Handler struct {
-	Routes RouteTable
+	Routes *RouteTable
 
 	peerMu sync.RWMutex
 	peers  map[*jsonrpc2.Conn]bool // Track peer proxy connections
+}
+
+// NewHandler creates a new Handler with all necessary fields initialized.
+func NewHandler() *Handler {
+	return &Handler{
+		Routes: NewRouteTable(),
+		peers:  make(map[*jsonrpc2.Conn]bool),
+	}
 }
 
 // Handle processes incoming JSON RPC requests.

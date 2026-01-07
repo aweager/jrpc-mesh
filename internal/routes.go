@@ -11,28 +11,25 @@ import (
 // RouteTable manages prefix-based routing to JSON-RPC connections.
 type RouteTable struct {
 	mu              sync.RWMutex
+	condMu          sync.Mutex // Separate mutex for condition variable
 	cond            *sync.Cond
 	routes          map[string]*jsonrpc2.Conn // prefix -> connection
 	OnRoutesChanged func()                    // Called after routes are modified (outside lock)
 }
 
-// ensureCond initializes the condition variable if needed.
-// Must be called with mu held.
-func (rt *RouteTable) ensureCond() {
-	if rt.cond == nil {
-		rt.cond = sync.NewCond(&rt.mu)
+// NewRouteTable creates a new RouteTable with all necessary fields initialized.
+func NewRouteTable() *RouteTable {
+	rt := &RouteTable{
+		routes: make(map[string]*jsonrpc2.Conn),
 	}
+	rt.cond = sync.NewCond(&rt.condMu)
+	return rt
 }
 
 // Update sets the prefixes for a connection, removing any previous prefixes
 // for that connection that are not in the new list.
 func (rt *RouteTable) Update(conn *jsonrpc2.Conn, prefixes []string) {
 	rt.mu.Lock()
-
-	rt.ensureCond()
-	if rt.routes == nil {
-		rt.routes = make(map[string]*jsonrpc2.Conn)
-	}
 
 	// Remove any existing prefixes for this connection that aren't in the new list
 	newPrefixes := make(map[string]struct{}, len(prefixes))
@@ -52,9 +49,13 @@ func (rt *RouteTable) Update(conn *jsonrpc2.Conn, prefixes []string) {
 		rt.routes[prefix] = conn
 	}
 
-	rt.cond.Broadcast()
 	callback := rt.OnRoutesChanged
 	rt.mu.Unlock()
+
+	// Broadcast route change while holding condMu
+	rt.condMu.Lock()
+	rt.cond.Broadcast()
+	rt.condMu.Unlock()
 
 	// Call callback outside the lock to allow it to read routes
 	if callback != nil {
@@ -124,29 +125,31 @@ func (rt *RouteTable) WaitUntilRoutable(ctx context.Context, method string) erro
 	go func() {
 		select {
 		case <-ctx.Done():
-			rt.mu.Lock()
-			rt.ensureCond()
+			rt.condMu.Lock()
 			rt.cond.Broadcast()
-			rt.mu.Unlock()
+			rt.condMu.Unlock()
 		case <-done:
 		}
 	}()
 	defer close(done)
 
 	// Wait loop
-	rt.mu.Lock()
-	rt.ensureCond()
+	rt.condMu.Lock()
 	for {
-		if rt.lookupUnlocked(method) != nil {
-			rt.mu.Unlock()
+		// Check if routable (temporarily release condMu to call Lookup)
+		rt.condMu.Unlock()
+		conn := rt.Lookup(method)
+
+		if conn != nil {
 			return nil
 		}
 
 		if ctx.Err() != nil {
-			rt.mu.Unlock()
 			return ctx.Err()
 		}
 
-		rt.cond.Wait()
+		// Relock before calling Wait
+		rt.condMu.Lock()
+		rt.cond.Wait() // Unlocks, waits, and relocks condMu
 	}
 }

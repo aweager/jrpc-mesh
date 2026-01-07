@@ -13,7 +13,7 @@ import (
 )
 
 func TestLookup_NoRoutes(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	if got := rt.Lookup("foo/bar"); got != nil {
 		t.Errorf("Lookup() = %v, want nil", got)
 	}
@@ -21,11 +21,9 @@ func TestLookup_NoRoutes(t *testing.T) {
 
 func TestLookup_ExactMatch(t *testing.T) {
 	conn := &jsonrpc2.Conn{}
-	rt := &RouteTable{
-		routes: map[string]*jsonrpc2.Conn{
-			"foo/": conn,
-		},
-	}
+	rt := NewRouteTable()
+	rt.routes["foo/"] = conn
+
 	if got := rt.Lookup("foo/bar"); got != conn {
 		t.Errorf("Lookup() = %v, want %v", got, conn)
 	}
@@ -34,12 +32,9 @@ func TestLookup_ExactMatch(t *testing.T) {
 func TestLookup_LongestPrefixWins(t *testing.T) {
 	shortConn := &jsonrpc2.Conn{}
 	longConn := &jsonrpc2.Conn{}
-	rt := &RouteTable{
-		routes: map[string]*jsonrpc2.Conn{
-			"foo/":     shortConn,
-			"foo/bar/": longConn,
-		},
-	}
+	rt := NewRouteTable()
+	rt.routes["foo/"] = shortConn
+	rt.routes["foo/bar/"] = longConn
 
 	// Should match longer prefix
 	if got := rt.Lookup("foo/bar/baz"); got != longConn {
@@ -54,11 +49,9 @@ func TestLookup_LongestPrefixWins(t *testing.T) {
 
 func TestLookup_NoMatch(t *testing.T) {
 	conn := &jsonrpc2.Conn{}
-	rt := &RouteTable{
-		routes: map[string]*jsonrpc2.Conn{
-			"foo/": conn,
-		},
-	}
+	rt := NewRouteTable()
+	rt.routes["foo/"] = conn
+
 	if got := rt.Lookup("bar/baz"); got != nil {
 		t.Errorf("Lookup(bar/baz) = %v, want nil", got)
 	}
@@ -93,7 +86,7 @@ func testConn(t *testing.T, handler jsonrpc2.Handler) (*jsonrpc2.Conn, *jsonrpc2
 }
 
 func TestUpdateRoutes_RegistersPrefixes(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -120,7 +113,7 @@ func TestUpdateRoutes_RegistersPrefixes(t *testing.T) {
 }
 
 func TestUpdateRoutes_InvalidParams(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -139,7 +132,7 @@ func TestUpdateRoutes_InvalidParams(t *testing.T) {
 }
 
 func TestHandle_UnknownProxyMethod(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -158,7 +151,7 @@ func TestHandle_UnknownProxyMethod(t *testing.T) {
 }
 
 func TestHandle_NoBackendRegistered(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -177,7 +170,7 @@ func TestHandle_NoBackendRegistered(t *testing.T) {
 }
 
 func TestHandle_RoutesToBackend(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 
 	// Create the proxy connection (client talks to proxy)
 	proxyClient, _ := testConn(t, h)
@@ -239,14 +232,11 @@ func TestRemoveConn(t *testing.T) {
 	conn1 := &jsonrpc2.Conn{}
 	conn2 := &jsonrpc2.Conn{}
 
-	rt := &RouteTable{
-		routes: map[string]*jsonrpc2.Conn{
-			"svc1/":     conn1,
-			"svc1/sub/": conn1,
-			"svc2/":     conn2,
-			"other/":    conn2,
-		},
-	}
+	rt := NewRouteTable()
+	rt.routes["svc1/"] = conn1
+	rt.routes["svc1/sub/"] = conn1
+	rt.routes["svc2/"] = conn2
+	rt.routes["other/"] = conn2
 
 	// Remove routes for conn1
 	rt.RemoveConn(conn1)
@@ -272,7 +262,7 @@ func TestRemoveConn(t *testing.T) {
 }
 
 func TestRemoveConn_OnDisconnect(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	// Register routes
@@ -371,7 +361,7 @@ func newTestService(t *testing.T, h *Handler, prefixes []string, handler jsonrpc
 }
 
 func TestIntegration_TwoServicesCallEachOther(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 
 	// Create Service A - echoes with "A:" prefix
 	serviceA := newTestService(t, h, []string{"serviceA/"}, jsonrpc2.HandlerWithError(
@@ -423,7 +413,7 @@ func TestIntegration_TwoServicesCallEachOther(t *testing.T) {
 }
 
 func TestUpdateRoutes_RemovesOldPrefixes(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, server := testConn(t, h)
 
 	// Register initial routes
@@ -480,7 +470,7 @@ func TestUpdateRoutes_RemovesOldPrefixes(t *testing.T) {
 }
 
 func TestUpdateRoutes_DoesNotAffectOtherConnections(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 
 	// Create two separate connections
 	client1, server1 := testConn(t, h)
@@ -550,7 +540,7 @@ func TestUpdateRoutes_DoesNotAffectOtherConnections(t *testing.T) {
 }
 
 func TestUpdateRoutes_EmptyPrefixesRemovesAll(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -588,7 +578,7 @@ func TestUpdateRoutes_EmptyPrefixesRemovesAll(t *testing.T) {
 }
 
 func TestIntegration_RouteCleanupBetweenServices(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 
 	// Create Service A
 	serviceA := newTestService(t, h, []string{"serviceA/"}, jsonrpc2.HandlerWithError(
@@ -632,7 +622,7 @@ func TestIntegration_RouteCleanupBetweenServices(t *testing.T) {
 }
 
 func TestWaitUntilRoutable_AlreadyRoutable(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 
 	// First, register a route
 	client1, _ := testConn(t, h)
@@ -656,7 +646,7 @@ func TestWaitUntilRoutable_AlreadyRoutable(t *testing.T) {
 }
 
 func TestWaitUntilRoutable_WaitsForRoute(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 
 	client1, _ := testConn(t, h)
 	client2, _ := testConn(t, h)
@@ -696,7 +686,7 @@ func TestWaitUntilRoutable_WaitsForRoute(t *testing.T) {
 }
 
 func TestWaitUntilRoutable_Timeout(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -719,7 +709,7 @@ func TestWaitUntilRoutable_Timeout(t *testing.T) {
 }
 
 func TestWaitUntilRoutable_DefaultTimeout(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	start := time.Now()
@@ -751,7 +741,7 @@ func TestWaitUntilRoutable_DefaultTimeout(t *testing.T) {
 }
 
 func TestWaitUntilRoutable_InvalidParams(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -793,7 +783,7 @@ func testPeerProxy(t *testing.T) (string, *Handler, func()) {
 	// Create a temp socket file
 	socketPath := t.TempDir() + "/peer.sock"
 
-	handler := &Handler{}
+	handler := NewHandler()
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("failed to listen on socket: %v", err)
@@ -841,7 +831,7 @@ func testPeerProxy(t *testing.T) (string, *Handler, func()) {
 }
 
 func TestAddPeerProxy_InvalidParams(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -874,7 +864,7 @@ func TestAddPeerProxy_InvalidParams(t *testing.T) {
 }
 
 func TestAddPeerProxy_InvalidSocket(t *testing.T) {
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	var result struct{}
@@ -900,7 +890,7 @@ func TestAddPeerProxy_ConnectsToPeer(t *testing.T) {
 	defer cleanup()
 
 	// Set up local proxy
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	// Connect to peer
@@ -928,7 +918,7 @@ func TestAddPeerProxy_SharesLocalRoutes(t *testing.T) {
 	defer cleanup()
 
 	// Set up local proxy with a service
-	h := &Handler{}
+	h := NewHandler()
 	_ = newTestService(t, h, []string{"localService/"}, jsonrpc2.HandlerWithError(
 		func(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 			return map[string]string{"from": "local"}, nil
@@ -971,7 +961,7 @@ func TestAddPeerProxy_ReceivesPeerRoutes(t *testing.T) {
 	))
 
 	// Set up local proxy
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	// Connect to peer
@@ -1012,7 +1002,7 @@ func TestAddPeerProxy_PropagatesRouteChanges(t *testing.T) {
 	defer cleanup()
 
 	// Set up local proxy
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	// Connect to peer first
@@ -1049,7 +1039,7 @@ func TestAddPeerProxy_CleanupOnDisconnect(t *testing.T) {
 	peerSocket, peerHandler, cleanup := testPeerProxy(t)
 
 	// Set up local proxy
-	h := &Handler{}
+	h := NewHandler()
 	client, _ := testConn(t, h)
 
 	// Register a local service

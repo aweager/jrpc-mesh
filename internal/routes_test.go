@@ -21,7 +21,7 @@ func getTestConn(id int) *jsonrpc2.Conn {
 }
 
 func TestRouteTable_Update(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn := getTestConn(1)
 
 	// Add initial prefixes
@@ -49,7 +49,7 @@ func TestRouteTable_Update(t *testing.T) {
 }
 
 func TestRouteTable_Lookup_LongestPrefix(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn1 := getTestConn(10)
 	conn2 := getTestConn(11)
 
@@ -68,7 +68,7 @@ func TestRouteTable_Lookup_LongestPrefix(t *testing.T) {
 }
 
 func TestRouteTable_Lookup_NoMatch(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn := getTestConn(20)
 
 	rt.Update(conn, []string{"foo/"})
@@ -79,7 +79,7 @@ func TestRouteTable_Lookup_NoMatch(t *testing.T) {
 }
 
 func TestRouteTable_Lookup_EmptyTable(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 
 	if got := rt.Lookup("any/method"); got != nil {
 		t.Errorf("Lookup on empty table = %v, want nil", got)
@@ -87,7 +87,7 @@ func TestRouteTable_Lookup_EmptyTable(t *testing.T) {
 }
 
 func TestRouteTable_RemoveConn(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn1 := getTestConn(30)
 	conn2 := getTestConn(31)
 
@@ -109,7 +109,7 @@ func TestRouteTable_RemoveConn(t *testing.T) {
 }
 
 func TestRouteTable_WaitUntilRoutable_AlreadyRoutable(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn := getTestConn(40)
 
 	rt.Update(conn, []string{"foo/"})
@@ -124,7 +124,7 @@ func TestRouteTable_WaitUntilRoutable_AlreadyRoutable(t *testing.T) {
 }
 
 func TestRouteTable_WaitUntilRoutable_BecomesRoutable(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn := getTestConn(50)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -152,7 +152,7 @@ func TestRouteTable_WaitUntilRoutable_BecomesRoutable(t *testing.T) {
 }
 
 func TestRouteTable_WaitUntilRoutable_Timeout(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -173,7 +173,7 @@ func TestRouteTable_WaitUntilRoutable_Timeout(t *testing.T) {
 }
 
 func TestRouteTable_WaitUntilRoutable_ContextCancelled(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -198,7 +198,7 @@ func TestRouteTable_WaitUntilRoutable_ContextCancelled(t *testing.T) {
 }
 
 func TestRouteTable_Update_OverwritesExistingPrefix(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn1 := getTestConn(60)
 	conn2 := getTestConn(61)
 
@@ -212,7 +212,7 @@ func TestRouteTable_Update_OverwritesExistingPrefix(t *testing.T) {
 }
 
 func TestRouteTable_Update_EmptyPrefixes(t *testing.T) {
-	rt := &RouteTable{}
+	rt := NewRouteTable()
 	conn := getTestConn(70)
 
 	rt.Update(conn, []string{"foo/"})
