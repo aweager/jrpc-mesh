@@ -168,7 +168,7 @@ func (c *Client) reconnectLoop(ctx context.Context, socketPath string) {
 		}
 
 		stream := jsonrpc2.NewBufferedStream(netConn, NewlineCodec{})
-		conn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.HandlerWithError(c.handleRequest), jsonrpc2.LogMessages(logger))
+		conn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(c.handleRequest)), jsonrpc2.LogMessages(logger))
 
 		c.mu.Lock()
 		c.netConn = netConn
