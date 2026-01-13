@@ -23,10 +23,12 @@ type Handler struct {
 
 // NewHandler creates a new Handler with all necessary fields initialized.
 func NewHandler() *Handler {
-	return &Handler{
+	h := &Handler{
 		Routes: NewRouteTable(),
 		peers:  make(map[*jsonrpc2.Conn]bool),
 	}
+	h.Routes.AddCallback(h.notifyPeers)
+	return h
 }
 
 // HandleWithError processes incoming JSON RPC requests, returning the result or error.
@@ -206,9 +208,6 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 	h.peers[peerConn] = true
 	h.peerMu.Unlock()
 
-	// Wire up route change notifications if not already done
-	h.Routes.OnRoutesChanged = h.notifyPeers
-
 	// Register ourselves as a peer with the remote proxy
 	// This will make the peer send us route updates and return its current routes
 	var peerRoutes mesh.RegisterAsPeerResult
@@ -254,9 +253,6 @@ func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn,
 	}
 	h.peers[conn] = true
 	h.peerMu.Unlock()
-
-	// Wire up route change notifications if not already done
-	h.Routes.OnRoutesChanged = h.notifyPeers
 
 	// Handle peer disconnect in background
 	go func() {
