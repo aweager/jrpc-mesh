@@ -82,5 +82,5 @@ func handleConnection(ctx context.Context, conn net.Conn, handler *internal.Hand
 	rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(handler.HandleWithError)), jsonrpc2.LogMessages(logger))
 	<-rpcConn.DisconnectNotify()
 	slog.Info("connection stopped", "id", id)
-	handler.Routes.RemoveConn(rpcConn)
+	handler.LocalRoutes.RemoveConn(rpcConn)
 }

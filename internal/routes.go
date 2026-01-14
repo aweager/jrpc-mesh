@@ -87,6 +87,25 @@ func (rt *RouteTable) Lookup(method string) *jsonrpc2.Conn {
 	return rt.lookupUnlocked(method)
 }
 
+// LookupWithPrefix returns the connection and matched prefix for the longest matching prefix.
+// Returns (nil, "") if no match is found.
+func (rt *RouteTable) LookupWithPrefix(method string) (*jsonrpc2.Conn, string) {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	var bestPrefix string
+	var bestConn *jsonrpc2.Conn
+
+	for prefix, conn := range rt.routes {
+		if strings.HasPrefix(method, prefix) && len(prefix) > len(bestPrefix) {
+			bestPrefix = prefix
+			bestConn = conn
+		}
+	}
+
+	return bestConn, bestPrefix
+}
+
 // lookupUnlocked is like Lookup but assumes the lock is already held.
 func (rt *RouteTable) lookupUnlocked(method string) *jsonrpc2.Conn {
 	var bestPrefix string
@@ -117,6 +136,18 @@ func (rt *RouteTable) GetPrefixesExcluding(exclude map[*jsonrpc2.Conn]bool) []st
 		if !exclude[conn] {
 			prefixes = append(prefixes, prefix)
 		}
+	}
+	return prefixes
+}
+
+// GetAllPrefixes returns all registered prefixes.
+func (rt *RouteTable) GetAllPrefixes() []string {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+
+	prefixes := make([]string, 0, len(rt.routes))
+	for prefix := range rt.routes {
+		prefixes = append(prefixes, prefix)
 	}
 	return prefixes
 }

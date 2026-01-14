@@ -57,6 +57,75 @@ func TestLookup_NoMatch(t *testing.T) {
 	}
 }
 
+func TestHandlerLookup_LocalPriorityOverPeer(t *testing.T) {
+	h := NewHandler()
+
+	localConn := &jsonrpc2.Conn{}
+	peerConn := &jsonrpc2.Conn{}
+
+	// Both tables have "foo/" prefix
+	h.LocalRoutes.mu.Lock()
+	h.LocalRoutes.routes["foo/"] = localConn
+	h.LocalRoutes.mu.Unlock()
+
+	h.PeerRoutes.mu.Lock()
+	h.PeerRoutes.routes["foo/"] = peerConn
+	h.PeerRoutes.mu.Unlock()
+
+	// Local should win (same prefix length, local priority)
+	if got := h.Lookup("foo/bar"); got != localConn {
+		t.Errorf("Lookup() = %v, want localConn", got)
+	}
+}
+
+func TestHandlerLookup_LongerPeerPrefixWins(t *testing.T) {
+	h := NewHandler()
+
+	localConn := &jsonrpc2.Conn{}
+	peerConn := &jsonrpc2.Conn{}
+
+	// Local has shorter prefix
+	h.LocalRoutes.mu.Lock()
+	h.LocalRoutes.routes["foo/"] = localConn
+	h.LocalRoutes.mu.Unlock()
+
+	// Peer has longer prefix
+	h.PeerRoutes.mu.Lock()
+	h.PeerRoutes.routes["foo/bar/"] = peerConn
+	h.PeerRoutes.mu.Unlock()
+
+	// Peer should win for foo/bar/baz (longer match)
+	if got := h.Lookup("foo/bar/baz"); got != peerConn {
+		t.Errorf("Lookup(foo/bar/baz) = %v, want peerConn", got)
+	}
+
+	// Local should win for foo/qux (only local matches)
+	if got := h.Lookup("foo/qux"); got != localConn {
+		t.Errorf("Lookup(foo/qux) = %v, want localConn", got)
+	}
+}
+
+func TestHandlerLookup_OnlyPeerRoute(t *testing.T) {
+	h := NewHandler()
+
+	peerConn := &jsonrpc2.Conn{}
+
+	// Only peer has a route
+	h.PeerRoutes.mu.Lock()
+	h.PeerRoutes.routes["peer/"] = peerConn
+	h.PeerRoutes.mu.Unlock()
+
+	// Should find peer route
+	if got := h.Lookup("peer/method"); got != peerConn {
+		t.Errorf("Lookup(peer/method) = %v, want peerConn", got)
+	}
+
+	// Should not find non-existent route
+	if got := h.Lookup("other/method"); got != nil {
+		t.Errorf("Lookup(other/method) = %v, want nil", got)
+	}
+}
+
 // testConn creates a pair of connected jsonrpc2.Conn for testing.
 // Returns (client, server) connections.
 func testConn(t *testing.T, handler *Handler) (*jsonrpc2.Conn, *jsonrpc2.Conn) {
@@ -98,16 +167,16 @@ func TestUpdateRoutes_RegistersPrefixes(t *testing.T) {
 	}
 
 	// Verify routes were registered
-	h.Routes.mu.RLock()
-	defer h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RLock()
+	defer h.LocalRoutes.mu.RUnlock()
 
-	if len(h.Routes.routes) != 2 {
-		t.Errorf("expected 2 routes, got %d", len(h.Routes.routes))
+	if len(h.LocalRoutes.routes) != 2 {
+		t.Errorf("expected 2 routes, got %d", len(h.LocalRoutes.routes))
 	}
-	if _, ok := h.Routes.routes["svc1/"]; !ok {
+	if _, ok := h.LocalRoutes.routes["svc1/"]; !ok {
 		t.Error("svc1/ not registered")
 	}
-	if _, ok := h.Routes.routes["svc2/"]; !ok {
+	if _, ok := h.LocalRoutes.routes["svc2/"]; !ok {
 		t.Error("svc2/ not registered")
 	}
 }
@@ -210,11 +279,11 @@ func TestHandle_RoutesToBackend(t *testing.T) {
 	})
 
 	// Register the backend's routes
-	h.Routes.mu.Lock()
-	h.Routes.routes = map[string]*jsonrpc2.Conn{
+	h.LocalRoutes.mu.Lock()
+	h.LocalRoutes.routes = map[string]*jsonrpc2.Conn{
 		"myservice/": backendClient,
 	}
-	h.Routes.mu.Unlock()
+	h.LocalRoutes.mu.Unlock()
 
 	// Now call through the proxy
 	var result map[string]string
@@ -275,11 +344,11 @@ func TestRemoveConn_OnDisconnect(t *testing.T) {
 	}
 
 	// Verify route exists
-	h.Routes.mu.RLock()
-	if len(h.Routes.routes) != 1 {
-		t.Fatalf("expected 1 route, got %d", len(h.Routes.routes))
+	h.LocalRoutes.mu.RLock()
+	if len(h.LocalRoutes.routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(h.LocalRoutes.routes))
 	}
-	h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RUnlock()
 
 	// Close the client connection
 	client.Close()
@@ -290,22 +359,22 @@ func TestRemoveConn_OnDisconnect(t *testing.T) {
 
 	// For this test, we directly verify RemoveConn works
 	// by getting the server-side connection and removing its routes
-	h.Routes.mu.RLock()
+	h.LocalRoutes.mu.RLock()
 	var serverConn *jsonrpc2.Conn
-	for _, c := range h.Routes.routes {
+	for _, c := range h.LocalRoutes.routes {
 		serverConn = c
 		break
 	}
-	h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RUnlock()
 
 	if serverConn != nil {
-		h.Routes.RemoveConn(serverConn)
+		h.LocalRoutes.RemoveConn(serverConn)
 	}
 
-	h.Routes.mu.RLock()
-	defer h.Routes.mu.RUnlock()
-	if len(h.Routes.routes) != 0 {
-		t.Errorf("expected 0 routes after cleanup, got %d", len(h.Routes.routes))
+	h.LocalRoutes.mu.RLock()
+	defer h.LocalRoutes.mu.RUnlock()
+	if len(h.LocalRoutes.routes) != 0 {
+		t.Errorf("expected 0 routes after cleanup, got %d", len(h.LocalRoutes.routes))
 	}
 }
 
@@ -426,11 +495,11 @@ func TestUpdateRoutes_RemovesOldPrefixes(t *testing.T) {
 	}
 
 	// Verify all 3 routes are registered
-	h.Routes.mu.RLock()
-	if len(h.Routes.routes) != 3 {
-		t.Fatalf("expected 3 routes, got %d", len(h.Routes.routes))
+	h.LocalRoutes.mu.RLock()
+	if len(h.LocalRoutes.routes) != 3 {
+		t.Fatalf("expected 3 routes, got %d", len(h.LocalRoutes.routes))
 	}
-	h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RUnlock()
 
 	// Update routes - keep svc1/, add svc4/, remove svc2/ and svc3/
 	err = client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
@@ -441,30 +510,30 @@ func TestUpdateRoutes_RemovesOldPrefixes(t *testing.T) {
 	}
 
 	// Verify the correct routes exist
-	h.Routes.mu.RLock()
-	defer h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RLock()
+	defer h.LocalRoutes.mu.RUnlock()
 
-	if len(h.Routes.routes) != 2 {
-		t.Errorf("expected 2 routes, got %d", len(h.Routes.routes))
+	if len(h.LocalRoutes.routes) != 2 {
+		t.Errorf("expected 2 routes, got %d", len(h.LocalRoutes.routes))
 	}
-	if _, ok := h.Routes.routes["svc1/"]; !ok {
+	if _, ok := h.LocalRoutes.routes["svc1/"]; !ok {
 		t.Error("svc1/ should still be registered")
 	}
-	if _, ok := h.Routes.routes["svc4/"]; !ok {
+	if _, ok := h.LocalRoutes.routes["svc4/"]; !ok {
 		t.Error("svc4/ should be registered")
 	}
-	if _, ok := h.Routes.routes["svc2/"]; ok {
+	if _, ok := h.LocalRoutes.routes["svc2/"]; ok {
 		t.Error("svc2/ should have been removed")
 	}
-	if _, ok := h.Routes.routes["svc3/"]; ok {
+	if _, ok := h.LocalRoutes.routes["svc3/"]; ok {
 		t.Error("svc3/ should have been removed")
 	}
 
 	// Verify the routes point to the correct connection (server-side conn)
-	if h.Routes.routes["svc1/"] != server {
+	if h.LocalRoutes.routes["svc1/"] != server {
 		t.Error("svc1/ should be registered to the server connection")
 	}
-	if h.Routes.routes["svc4/"] != server {
+	if h.LocalRoutes.routes["svc4/"] != server {
 		t.Error("svc4/ should be registered to the server connection")
 	}
 }
@@ -495,11 +564,11 @@ func TestUpdateRoutes_DoesNotAffectOtherConnections(t *testing.T) {
 	}
 
 	// Verify all 4 routes exist
-	h.Routes.mu.RLock()
-	if len(h.Routes.routes) != 4 {
-		t.Fatalf("expected 4 routes, got %d", len(h.Routes.routes))
+	h.LocalRoutes.mu.RLock()
+	if len(h.LocalRoutes.routes) != 4 {
+		t.Fatalf("expected 4 routes, got %d", len(h.LocalRoutes.routes))
 	}
-	h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RUnlock()
 
 	// Connection 1 updates its routes (removing conn1-svc2/)
 	err = client1.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
@@ -510,31 +579,31 @@ func TestUpdateRoutes_DoesNotAffectOtherConnections(t *testing.T) {
 	}
 
 	// Verify conn1's old route is gone but conn2's routes are untouched
-	h.Routes.mu.RLock()
-	defer h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RLock()
+	defer h.LocalRoutes.mu.RUnlock()
 
-	if len(h.Routes.routes) != 3 {
-		t.Errorf("expected 3 routes, got %d", len(h.Routes.routes))
+	if len(h.LocalRoutes.routes) != 3 {
+		t.Errorf("expected 3 routes, got %d", len(h.LocalRoutes.routes))
 	}
 
 	// Connection 1's routes
-	if _, ok := h.Routes.routes["conn1-svc1/"]; !ok {
+	if _, ok := h.LocalRoutes.routes["conn1-svc1/"]; !ok {
 		t.Error("conn1-svc1/ should still be registered")
 	}
-	if _, ok := h.Routes.routes["conn1-svc2/"]; ok {
+	if _, ok := h.LocalRoutes.routes["conn1-svc2/"]; ok {
 		t.Error("conn1-svc2/ should have been removed")
 	}
 
 	// Connection 2's routes should be unchanged
-	if c, ok := h.Routes.routes["conn2-svc1/"]; !ok || c != server2 {
+	if c, ok := h.LocalRoutes.routes["conn2-svc1/"]; !ok || c != server2 {
 		t.Error("conn2-svc1/ should still be registered to server2")
 	}
-	if c, ok := h.Routes.routes["conn2-svc2/"]; !ok || c != server2 {
+	if c, ok := h.LocalRoutes.routes["conn2-svc2/"]; !ok || c != server2 {
 		t.Error("conn2-svc2/ should still be registered to server2")
 	}
 
 	// Verify ownership
-	if h.Routes.routes["conn1-svc1/"] != server1 {
+	if h.LocalRoutes.routes["conn1-svc1/"] != server1 {
 		t.Error("conn1-svc1/ should be registered to server1")
 	}
 }
@@ -554,11 +623,11 @@ func TestUpdateRoutes_EmptyPrefixesRemovesAll(t *testing.T) {
 	}
 
 	// Verify routes exist
-	h.Routes.mu.RLock()
-	if len(h.Routes.routes) != 2 {
-		t.Fatalf("expected 2 routes, got %d", len(h.Routes.routes))
+	h.LocalRoutes.mu.RLock()
+	if len(h.LocalRoutes.routes) != 2 {
+		t.Fatalf("expected 2 routes, got %d", len(h.LocalRoutes.routes))
 	}
-	h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RUnlock()
 
 	// Update with empty prefixes - should remove all routes for this connection
 	err = client.Call(context.Background(), "awe.proxy/UpdateRoutes", map[string]any{
@@ -569,11 +638,11 @@ func TestUpdateRoutes_EmptyPrefixesRemovesAll(t *testing.T) {
 	}
 
 	// Verify all routes are gone
-	h.Routes.mu.RLock()
-	defer h.Routes.mu.RUnlock()
+	h.LocalRoutes.mu.RLock()
+	defer h.LocalRoutes.mu.RUnlock()
 
-	if len(h.Routes.routes) != 0 {
-		t.Errorf("expected 0 routes after empty update, got %d", len(h.Routes.routes))
+	if len(h.LocalRoutes.routes) != 0 {
+		t.Errorf("expected 0 routes after empty update, got %d", len(h.LocalRoutes.routes))
 	}
 }
 
@@ -604,7 +673,7 @@ func TestIntegration_RouteCleanupBetweenServices(t *testing.T) {
 	// Close Service B and clean up its routes
 	serviceB.server.Close()
 	serviceB.client.Close()
-	h.Routes.RemoveConn(serviceB.server)
+	h.LocalRoutes.RemoveConn(serviceB.server)
 
 	// Service A tries to call Service B again - should fail with method not found
 	err = serviceA.client.Call(context.Background(), "serviceB/method", nil, &result)
@@ -811,7 +880,7 @@ func testPeerProxy(t *testing.T) (string, *Handler, func()) {
 
 			go func() {
 				<-rpcConn.DisconnectNotify()
-				handler.Routes.RemoveConn(rpcConn)
+				handler.LocalRoutes.RemoveConn(rpcConn)
 			}()
 		}
 	}()
@@ -938,10 +1007,11 @@ func TestAddPeerProxy_SharesLocalRoutes(t *testing.T) {
 	// Give time for routes to propagate
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify peer received the routes
-	peerHandler.Routes.mu.RLock()
-	_, hasLocalRoute := peerHandler.Routes.routes["localService/"]
-	peerHandler.Routes.mu.RUnlock()
+	// Verify peer received the routes in its PeerRoutes table
+	// (routes from peer connections are stored in PeerRoutes)
+	peerHandler.PeerRoutes.mu.RLock()
+	_, hasLocalRoute := peerHandler.PeerRoutes.routes["localService/"]
+	peerHandler.PeerRoutes.mu.RUnlock()
 
 	if !hasLocalRoute {
 		t.Error("peer should have received localService/ route")
@@ -986,10 +1056,10 @@ func TestAddPeerProxy_ReceivesPeerRoutes(t *testing.T) {
 	// Give time for routes to propagate
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify local proxy received the peer's routes
-	h.Routes.mu.RLock()
-	_, hasPeerRoute := h.Routes.routes["peerService/"]
-	h.Routes.mu.RUnlock()
+	// Verify local proxy received the peer's routes in the PeerRoutes table
+	h.PeerRoutes.mu.RLock()
+	_, hasPeerRoute := h.PeerRoutes.routes["peerService/"]
+	h.PeerRoutes.mu.RUnlock()
 
 	if !hasPeerRoute {
 		t.Error("local proxy should have received peerService/ route from peer")
@@ -1024,10 +1094,10 @@ func TestAddPeerProxy_PropagatesRouteChanges(t *testing.T) {
 	// Give time for routes to propagate
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify peer received the new route
-	peerHandler.Routes.mu.RLock()
-	_, hasNewRoute := peerHandler.Routes.routes["newService/"]
-	peerHandler.Routes.mu.RUnlock()
+	// Verify peer received the new route in its PeerRoutes table
+	peerHandler.PeerRoutes.mu.RLock()
+	_, hasNewRoute := peerHandler.PeerRoutes.routes["newService/"]
+	peerHandler.PeerRoutes.mu.RUnlock()
 
 	if !hasNewRoute {
 		t.Error("peer should have received newService/ route after it was added")
@@ -1061,10 +1131,10 @@ func TestAddPeerProxy_CleanupOnDisconnect(t *testing.T) {
 	// Give time for routes to propagate
 	time.Sleep(50 * time.Millisecond)
 
-	// Verify peer received the route
-	peerHandler.Routes.mu.RLock()
-	routeCountBefore := len(peerHandler.Routes.routes)
-	peerHandler.Routes.mu.RUnlock()
+	// Verify peer received the route in its PeerRoutes table
+	peerHandler.PeerRoutes.mu.RLock()
+	routeCountBefore := len(peerHandler.PeerRoutes.routes)
+	peerHandler.PeerRoutes.mu.RUnlock()
 
 	if routeCountBefore == 0 {
 		t.Fatal("peer should have received routes")

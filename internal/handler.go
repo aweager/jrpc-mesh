@@ -15,7 +15,8 @@ import (
 
 // Handler implements jsonrpc2.Handler for the jrpc-mesh proxy.
 type Handler struct {
-	Routes *RouteTable
+	LocalRoutes *RouteTable // Routes from local services
+	PeerRoutes  *RouteTable // Routes from peer proxies
 
 	peerMu      sync.RWMutex
 	peers       map[*jsonrpc2.Conn]bool   // Track peer proxy connections
@@ -25,12 +26,79 @@ type Handler struct {
 // NewHandler creates a new Handler with all necessary fields initialized.
 func NewHandler() *Handler {
 	h := &Handler{
-		Routes:      NewRouteTable(),
+		LocalRoutes: NewRouteTable(),
+		PeerRoutes:  NewRouteTable(),
 		peers:       make(map[*jsonrpc2.Conn]bool),
 		peerSockets: make(map[string]*jsonrpc2.Conn),
 	}
-	h.Routes.AddCallback(h.notifyPeers)
+	// Only local route changes should notify peers
+	h.LocalRoutes.AddCallback(h.notifyPeers)
 	return h
+}
+
+// Lookup finds the best route for a method.
+// Local routes take priority if same prefix length, otherwise longest prefix wins.
+func (h *Handler) Lookup(method string) *jsonrpc2.Conn {
+	localConn, localPrefix := h.LocalRoutes.LookupWithPrefix(method)
+	peerConn, peerPrefix := h.PeerRoutes.LookupWithPrefix(method)
+
+	// No matches
+	if localConn == nil && peerConn == nil {
+		return nil
+	}
+
+	// Only one match
+	if localConn == nil {
+		return peerConn
+	}
+	if peerConn == nil {
+		return localConn
+	}
+
+	// Both match - local wins if same length or longer, otherwise longest prefix wins
+	if len(localPrefix) >= len(peerPrefix) {
+		return localConn
+	}
+	return peerConn
+}
+
+// WaitUntilRoutable waits until a method becomes routable in either table.
+func (h *Handler) WaitUntilRoutable(ctx context.Context, method string) error {
+	// Fast path: check if already routable
+	if h.Lookup(method) != nil {
+		return nil
+	}
+
+	// Create a channel to signal when routes change in either table
+	notify := make(chan struct{}, 1)
+	signalFunc := func() {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+
+	removeLocal := h.LocalRoutes.AddCallback(signalFunc)
+	removePeer := h.PeerRoutes.AddCallback(signalFunc)
+	defer removeLocal()
+	defer removePeer()
+
+	// Check again after registering callbacks
+	if h.Lookup(method) != nil {
+		return nil
+	}
+
+	// Wait for either route to become available or context cancellation
+	for {
+		select {
+		case <-notify:
+			if h.Lookup(method) != nil {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // HandleWithError processes incoming JSON RPC requests, returning the result or error.
@@ -41,7 +109,7 @@ func (h *Handler) HandleWithError(ctx context.Context, conn *jsonrpc2.Conn, req 
 	}
 
 	// Route to appropriate backend service
-	backend := h.Routes.Lookup(req.Method)
+	backend := h.Lookup(req.Method)
 	if backend == nil {
 		if req.Notif {
 			return nil, nil
@@ -105,7 +173,16 @@ func (h *Handler) handleUpdateRoutes(ctx context.Context, conn *jsonrpc2.Conn, r
 		}
 	}
 
-	h.Routes.Update(conn, params.Prefixes)
+	// Determine which table to update based on whether this is a peer connection
+	h.peerMu.RLock()
+	isPeer := h.peers[conn]
+	h.peerMu.RUnlock()
+
+	if isPeer {
+		h.PeerRoutes.Update(conn, params.Prefixes)
+	} else {
+		h.LocalRoutes.Update(conn, params.Prefixes)
+	}
 
 	if req.Notif {
 		return nil, nil
@@ -151,7 +228,7 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 	}
 	defer cancel()
 
-	err := h.Routes.WaitUntilRoutable(waitCtx, params.Method)
+	err := h.WaitUntilRoutable(waitCtx, params.Method)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, &jsonrpc2.Error{
@@ -247,8 +324,8 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		}
 	}
 
-	// Store the peer's routes in our routing table
-	h.Routes.Update(peerConn, peerRoutes.Prefixes)
+	// Store the peer's routes in our peer routing table
+	h.PeerRoutes.Update(peerConn, peerRoutes.Prefixes)
 
 	// Send our current local routes to peer (excluding peer-owned routes)
 	h.sendRoutesToPeer(ctx, peerConn)
@@ -261,7 +338,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		delete(h.peers, peerConn)
 		delete(h.peerSockets, socketPath)
 		h.peerMu.Unlock()
-		h.Routes.RemoveConn(peerConn)
+		h.PeerRoutes.RemoveConn(peerConn)
 	}()
 
 	return struct{}{}, nil
@@ -286,20 +363,12 @@ func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn,
 		h.peerMu.Lock()
 		delete(h.peers, conn)
 		h.peerMu.Unlock()
-		// Routes are cleaned up by the main connection handler
+		// Clean up peer routes for this connection
+		h.PeerRoutes.RemoveConn(conn)
 	}()
 
-	// Get our current routes (excluding peer-owned routes)
-	h.peerMu.RLock()
-	exclude := make(map[*jsonrpc2.Conn]bool, len(h.peers))
-	for p := range h.peers {
-		exclude[p] = true
-	}
-	h.peerMu.RUnlock()
-
-	prefixes := h.Routes.GetPrefixesExcluding(exclude)
-
-	// Return our current routes
+	// Return our current local routes (not peer routes)
+	prefixes := h.LocalRoutes.GetAllPrefixes()
 	return mesh.RegisterAsPeerResult{
 		Prefixes: prefixes,
 	}, nil
@@ -320,17 +389,10 @@ func (h *Handler) notifyPeers() {
 	}
 }
 
-// sendRoutesToPeer sends local routes to a specific peer, excluding routes owned by peers.
+// sendRoutesToPeer sends local routes to a specific peer.
 func (h *Handler) sendRoutesToPeer(ctx context.Context, peer *jsonrpc2.Conn) {
-	// Get peers to exclude (don't send peer routes back to peers)
-	h.peerMu.RLock()
-	exclude := make(map[*jsonrpc2.Conn]bool, len(h.peers))
-	for p := range h.peers {
-		exclude[p] = true
-	}
-	h.peerMu.RUnlock()
-
-	prefixes := h.Routes.GetPrefixesExcluding(exclude)
+	// Get all local prefixes (not peer prefixes)
+	prefixes := h.LocalRoutes.GetAllPrefixes()
 
 	// Send routes to peer (fire and forget - use Notify)
 	peer.Notify(ctx, "awe.proxy/UpdateRoutes", mesh.UpdateRoutesParams{
