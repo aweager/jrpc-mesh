@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -33,8 +34,41 @@ func NewHandler() *Handler {
 	return h
 }
 
-// HandleWithError processes incoming JSON RPC requests, returning the result or error.
-func (h *Handler) HandleWithError(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+// Handle implements jsonrpc2.Handler interface.
+func (h *Handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+	result, err := h.processRequest(ctx, conn, req)
+
+	// For notifications, log errors but don't send response
+	if req.Notif {
+		if err != nil {
+			slog.Error("notification handling error", "method", req.Method, "error", err)
+		}
+		return
+	}
+
+	// Build response
+	resp := &jsonrpc2.Response{ID: req.ID}
+	if err == nil {
+		err = resp.SetResult(result)
+	}
+
+	// Convert errors to jsonrpc2.Error format
+	if e, ok := err.(*jsonrpc2.Error); ok {
+		resp.Error = e
+	} else if err != nil {
+		resp.Error = &jsonrpc2.Error{Message: err.Error()}
+	}
+
+	// Send response, suppressing ErrClosed
+	err = conn.SendResponse(ctx, resp)
+	if err != nil && err != jsonrpc2.ErrClosed {
+		slog.Error("failed to send response", "id", resp.ID, "error", err)
+	}
+}
+
+// processRequest processes incoming JSON RPC requests, returning the result or error.
+// This is an internal helper for the Handle method.
+func (h *Handler) processRequest(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
 	// Handle proxy-specific methods
 	if strings.HasPrefix(req.Method, "awe.proxy/") {
 		return h.handleProxyMethod(ctx, conn, req)
@@ -217,7 +251,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 	// Create JSON-RPC connection to peer
 	// The peer's UpdateRoutes calls will be handled by this handler
 	stream := jsonrpc2.NewBufferedStream(peerNetConn, mesh.NewlineCodec{})
-	peerConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(h.HandleWithError)))
+	peerConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(h))
 
 	// Register peer connection
 	h.peerMu.Lock()

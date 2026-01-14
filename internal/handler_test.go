@@ -74,7 +74,7 @@ func testConn(t *testing.T, handler *Handler) (*jsonrpc2.Conn, *jsonrpc2.Conn) {
 	server := jsonrpc2.NewConn(
 		ctx,
 		jsonrpc2.NewBufferedStream(serverConn, mesh.NewlineCodec{}),
-		jsonrpc2.HandlerWithError(handler.HandleWithError),
+		handler,
 	)
 
 	t.Cleanup(func() {
@@ -328,7 +328,7 @@ func newTestService(t *testing.T, h *Handler, prefixes []string, handler jsonrpc
 	proxyConn := jsonrpc2.NewConn(
 		ctx,
 		jsonrpc2.NewBufferedStream(proxyEnd, mesh.NewlineCodec{}),
-		jsonrpc2.HandlerWithError(h.HandleWithError),
+		h,
 	)
 
 	// Service's view - handles incoming routed calls
@@ -803,7 +803,7 @@ func testPeerProxy(t *testing.T) (string, *Handler, func()) {
 				return // Listener closed
 			}
 			stream := jsonrpc2.NewBufferedStream(conn, mesh.NewlineCodec{})
-			rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(handler.HandleWithError)))
+			rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler))
 
 			connMu.Lock()
 			connections = append(connections, rpcConn)

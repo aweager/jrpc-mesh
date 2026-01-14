@@ -79,7 +79,7 @@ func handleConnection(ctx context.Context, conn net.Conn, handler *internal.Hand
 	slog.Info("new connection", "id", id)
 	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelInfo)
 	stream := jsonrpc2.NewBufferedStream(conn, mesh.NewlineCodec{})
-	rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(handler.HandleWithError)), jsonrpc2.LogMessages(logger))
+	rpcConn := jsonrpc2.NewConn(ctx, stream, jsonrpc2.AsyncHandler(handler), jsonrpc2.LogMessages(logger))
 	<-rpcConn.DisconnectNotify()
 	slog.Info("connection stopped", "id", id)
 	handler.Routes.RemoveConn(rpcConn)
