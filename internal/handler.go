@@ -17,15 +17,17 @@ import (
 type Handler struct {
 	Routes *RouteTable
 
-	peerMu sync.RWMutex
-	peers  map[*jsonrpc2.Conn]bool // Track peer proxy connections
+	peerMu      sync.RWMutex
+	peers       map[*jsonrpc2.Conn]bool   // Track peer proxy connections
+	peerSockets map[string]*jsonrpc2.Conn // Track peer connections by socket path
 }
 
 // NewHandler creates a new Handler with all necessary fields initialized.
 func NewHandler() *Handler {
 	h := &Handler{
-		Routes: NewRouteTable(),
-		peers:  make(map[*jsonrpc2.Conn]bool),
+		Routes:      NewRouteTable(),
+		peers:       make(map[*jsonrpc2.Conn]bool),
+		peerSockets: make(map[string]*jsonrpc2.Conn),
 	}
 	h.Routes.AddCallback(h.notifyPeers)
 	return h
@@ -186,6 +188,23 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		}
 	}
 
+	// Check if we already have a connection to this socket
+	h.peerMu.Lock()
+	if existingConn, exists := h.peerSockets[params.Socket]; exists {
+		// Check if the connection is still alive
+		select {
+		case <-existingConn.DisconnectNotify():
+			// Connection is dead, clean it up
+			delete(h.peerSockets, params.Socket)
+			delete(h.peers, existingConn)
+		default:
+			// Connection is still alive, return success (idempotent)
+			h.peerMu.Unlock()
+			return struct{}{}, nil
+		}
+	}
+	h.peerMu.Unlock()
+
 	// Connect to peer proxy socket
 	peerNetConn, err := net.Dial("unix", params.Socket)
 	if err != nil {
@@ -205,7 +224,11 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 	if h.peers == nil {
 		h.peers = make(map[*jsonrpc2.Conn]bool)
 	}
+	if h.peerSockets == nil {
+		h.peerSockets = make(map[string]*jsonrpc2.Conn)
+	}
 	h.peers[peerConn] = true
+	h.peerSockets[params.Socket] = peerConn
 	h.peerMu.Unlock()
 
 	// Register ourselves as a peer with the remote proxy
@@ -215,6 +238,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		// Clean up on failure
 		h.peerMu.Lock()
 		delete(h.peers, peerConn)
+		delete(h.peerSockets, params.Socket)
 		h.peerMu.Unlock()
 		peerConn.Close()
 		return nil, &jsonrpc2.Error{
@@ -230,10 +254,12 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 	h.sendRoutesToPeer(ctx, peerConn)
 
 	// Handle peer disconnect in background
+	socketPath := params.Socket // Capture for use in goroutine
 	go func() {
 		<-peerConn.DisconnectNotify()
 		h.peerMu.Lock()
 		delete(h.peers, peerConn)
+		delete(h.peerSockets, socketPath)
 		h.peerMu.Unlock()
 		h.Routes.RemoveConn(peerConn)
 	}()

@@ -1085,3 +1085,77 @@ func TestAddPeerProxy_CleanupOnDisconnect(t *testing.T) {
 		t.Errorf("expected 0 peers after disconnect, got %d", peerCount)
 	}
 }
+
+func TestAddPeerProxy_Idempotent(t *testing.T) {
+	// Set up peer proxy
+	peerSocket, _, cleanup := testPeerProxy(t)
+	defer cleanup()
+
+	// Set up local proxy
+	h := NewHandler()
+	client, _ := testConn(t, h)
+
+	// Call AddPeerProxy first time
+	var result struct{}
+	err := client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy (first call) failed: %v", err)
+	}
+
+	// Verify peer is registered
+	h.peerMu.RLock()
+	peerCountFirst := len(h.peers)
+	socketCountFirst := len(h.peerSockets)
+	h.peerMu.RUnlock()
+
+	if peerCountFirst != 1 {
+		t.Errorf("expected 1 peer after first call, got %d", peerCountFirst)
+	}
+	if socketCountFirst != 1 {
+		t.Errorf("expected 1 socket tracked after first call, got %d", socketCountFirst)
+	}
+
+	// Call AddPeerProxy second time with same socket (should be idempotent)
+	err = client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy (second call) failed: %v", err)
+	}
+
+	// Verify we still have exactly one peer (not two)
+	h.peerMu.RLock()
+	peerCountSecond := len(h.peers)
+	socketCountSecond := len(h.peerSockets)
+	h.peerMu.RUnlock()
+
+	if peerCountSecond != 1 {
+		t.Errorf("expected 1 peer after second call (idempotent), got %d", peerCountSecond)
+	}
+	if socketCountSecond != 1 {
+		t.Errorf("expected 1 socket tracked after second call (idempotent), got %d", socketCountSecond)
+	}
+
+	// Call AddPeerProxy third time (verify multiple calls work)
+	err = client.Call(context.Background(), "awe.proxy/AddPeerProxy", map[string]any{
+		"socket": peerSocket,
+	}, &result)
+	if err != nil {
+		t.Fatalf("AddPeerProxy (third call) failed: %v", err)
+	}
+
+	// Verify we still have exactly one peer
+	h.peerMu.RLock()
+	peerCountThird := len(h.peers)
+	socketCountThird := len(h.peerSockets)
+	h.peerMu.RUnlock()
+
+	if peerCountThird != 1 {
+		t.Errorf("expected 1 peer after third call (idempotent), got %d", peerCountThird)
+	}
+	if socketCountThird != 1 {
+		t.Errorf("expected 1 socket tracked after third call (idempotent), got %d", socketCountThird)
+	}
+}
