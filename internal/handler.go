@@ -139,7 +139,7 @@ func (h *Handler) handleWaitUntilRoutable(ctx context.Context, conn *jsonrpc2.Co
 
 	var waitCtx context.Context
 	var cancel context.CancelFunc
-	if timeoutS > 0 {
+	if timeoutS >= 0 {
 		// Create a context with timeout
 		timeout := time.Duration(timeoutS * float64(time.Second))
 		waitCtx, cancel = context.WithTimeout(ctx, timeout)
