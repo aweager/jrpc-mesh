@@ -85,6 +85,20 @@ func (c *Client) RegisterSubscriber(subscription Subscription, subscriber Subscr
 	}, nil
 }
 
+// Publishmessage publishes a message into pubsub
+func (c *Client) PublishMessage(ctx context.Context, message *PublishMessageParams) error {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return ErrNotConnected
+	}
+
+	var result *json.RawMessage
+	return conn.Call(ctx, "awe.proxy/PublishMessage", message, &result)
+}
+
 // Call makes a JSON-RPC call to a service via the proxy.
 // The serviceName is prepended to the method to route to the correct instance.
 func (c *Client) Call(ctx context.Context, serviceName, method string, params, result any) error {
