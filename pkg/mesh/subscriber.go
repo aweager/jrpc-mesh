@@ -1,9 +1,5 @@
 package mesh
 
-import (
-	"context"
-)
-
 // Subscriber receives pubsub messages published on the mesh
 type Subscriber interface {
 	// ReceiveMessage processes a message received from the mesh
