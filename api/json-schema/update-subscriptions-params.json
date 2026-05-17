@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/update-subscriptions-params.json",
+  "title": "awe.proxy/UpdateSubscriptions Params",
+  "description": "Request parameters for the awe.proxy/UpdateSubscriptions method. The provided list replaces the connection's full subscription set.",
+  "type": "object",
+  "properties": {
+    "subscriptions": {
+      "type": "array",
+      "description": "Full set of pubsub subscriptions for this connection.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "publisher": {
+            "type": "string",
+            "description": "Identifier of the publisher to subscribe to."
+          },
+          "topic": {
+            "type": "string",
+            "description": "Topic name within the publisher to subscribe to."
+          }
+        },
+        "required": ["publisher", "topic"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["subscriptions"],
+  "additionalProperties": false
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/receive-message-params.json",
+  "title": "awe.proxy.client/ReceiveMessage Params",
+  "description": "Notification parameters for the awe.proxy.client/ReceiveMessage method, sent by the proxy to subscribers when a matching message is published.",
+  "type": "object",
+  "properties": {
+    "publisher": {
+      "type": "string",
+      "description": "Identifier of the publisher the message originated from."
+    },
+    "topic": {
+      "type": "string",
+      "description": "Topic name within the publisher."
+    },
+    "payload": {
+      "description": "Arbitrary JSON payload published by the originator."
+    }
+  },
+  "required": ["publisher", "topic", "payload"],
+  "additionalProperties": false
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/aweager/jrpc-mesh/api/json-schema/publish-message-params.json",
+  "title": "awe.proxy/PublishMessage Params",
+  "description": "Request parameters for the awe.proxy/PublishMessage method.",
+  "type": "object",
+  "properties": {
+    "publisher": {
+      "type": "string",
+      "description": "Identifier of the publisher this message originates from."
+    },
+    "topic": {
+      "type": "string",
+      "description": "Topic name within the publisher."
+    },
+    "payload": {
+      "description": "Arbitrary JSON payload delivered to subscribers."
+    }
+  },
+  "required": ["publisher", "topic", "payload"],
+  "additionalProperties": false
+}

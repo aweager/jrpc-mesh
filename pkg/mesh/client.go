@@ -18,16 +18,19 @@ import (
 const connectionRetry = time.Second * 5
 
 var ErrNotConnected = errors.New("no current connection to mesh")
+var ErrSubscriptionAlreadyRegistered = errors.New("there is already a subscription for this key")
 
 // Client represents a somewhat opinionated connection to the jrpc-mesh reverse proxy
 type Client struct {
-	mu       sync.RWMutex
-	conn     *jsonrpc2.Conn
-	netConn  net.Conn
-	handlers map[string]Handler // service name -> handler
+	mu            sync.RWMutex
+	conn          *jsonrpc2.Conn
+	netConn       net.Conn
+	handlers      map[string]Handler          // service name -> handler
+	subscriptions map[Subscription]Subscriber // subscription -> callback
 
-	notifyCh chan struct{}
-	cancel   context.CancelFunc
+	routeUpdateNotifyCh        chan struct{}
+	subscriptionUpdateNotifyCh chan struct{}
+	cancel                     context.CancelFunc
 }
 
 // Connect connects to the jrpc-mesh proxy and sets up the handler for incoming requests
@@ -35,13 +38,14 @@ func Connect(socketPath string) (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	client := &Client{
-		notifyCh: make(chan struct{}, 1),
-		handlers: make(map[string]Handler),
-		cancel:   cancel,
+		routeUpdateNotifyCh: make(chan struct{}, 1),
+		handlers:            make(map[string]Handler),
+		cancel:              cancel,
 	}
 
 	go client.reconnectLoop(ctx, socketPath)
 	go client.updateRoutesLoop(ctx)
+	go client.updateSubscriptionsLoop(ctx)
 
 	return client, nil
 }
@@ -52,9 +56,33 @@ func (c *Client) RegisterService(serviceName string, handler Handler) {
 	defer c.mu.Unlock()
 	c.handlers[serviceName] = handler
 	select {
-	case c.notifyCh <- struct{}{}:
+	case c.routeUpdateNotifyCh <- struct{}{}:
 	default:
 	}
+}
+
+// RegisterSubscriber registers a new subscriber for incoming pubsub messages
+// returns a function to cancel the subscription
+func (c *Client) RegisterSubscriber(subscription Subscription, subscriber Subscriber) (func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, exists := c.subscriptions[subscription]
+	if exists {
+		return nil, ErrSubscriptionAlreadyRegistered
+	}
+
+	c.subscriptions[subscription] = subscriber
+	select {
+	case c.subscriptionUpdateNotifyCh <- struct{}{}:
+	default:
+	}
+
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.subscriptions, subscription)
+	}, nil
 }
 
 // Call makes a JSON-RPC call to a service via the proxy.
@@ -116,9 +144,33 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) handleRequest(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result any, err error) {
+	if req.Method == "awe.proxy.client/ReceiveMessage" {
+		var params PublishMessageParams
+		if err := json.Unmarshal(*req.Params, &params); err != nil {
+			return nil, &jsonrpc2.Error{
+				Code:    jsonrpc2.CodeInvalidParams,
+				Message: "invalid params: " + err.Error(),
+			}
+		}
+
+		subscription := Subscription{
+			Publisher: params.Publisher,
+			Topic:     params.Topic,
+		}
+
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		if subscriber, ok := c.subscriptions[subscription]; ok {
+			subscriber.ReceiveMessage(&params)
+		}
+		return nil, nil
+	}
+
 	var handler Handler
 	var service string
 	var method string
+
+	c.mu.RLock()
 	for candidateService, candidateHandler := range c.handlers {
 		candidateMethod, found := strings.CutPrefix(req.Method, candidateService+"/")
 		if found {
@@ -128,6 +180,7 @@ func (c *Client) handleRequest(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			break
 		}
 	}
+	c.mu.RUnlock()
 
 	if handler == nil {
 		return nil, &jsonrpc2.Error{
@@ -176,7 +229,12 @@ func (c *Client) reconnectLoop(ctx context.Context, socketPath string) {
 		c.mu.Unlock()
 
 		select {
-		case c.notifyCh <- struct{}{}:
+		case c.routeUpdateNotifyCh <- struct{}{}:
+		default:
+		}
+
+		select {
+		case c.subscriptionUpdateNotifyCh <- struct{}{}:
 		default:
 		}
 
@@ -196,7 +254,7 @@ func (c *Client) updateRoutesLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.notifyCh:
+		case <-c.routeUpdateNotifyCh:
 			c.mu.RLock()
 			services := slices.Collect(maps.Keys(c.handlers))
 			conn := c.conn
@@ -208,10 +266,51 @@ func (c *Client) updateRoutesLoop(ctx context.Context) {
 			}
 
 			if conn != nil {
-				conn.Notify(ctx, "awe.proxy/UpdateRoutes", UpdateRoutesParams{
+				var result *json.RawMessage
+				err := conn.Call(ctx, "awe.proxy/UpdateRoutes", UpdateRoutesParams{
 					Prefixes: prefixes,
-				})
+				}, &result)
+
+				if err != nil {
+					slog.Error("failed to update routes", "err", err)
+				}
 			}
+		}
+	}
+}
+
+// updateSubscriptionsLoop shares subscriptions with the mesh
+// when they are updated or a new connection is established.
+func (c *Client) updateSubscriptionsLoop(ctx context.Context) {
+	var lastConn *jsonrpc2.Conn
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.subscriptionUpdateNotifyCh:
+			c.mu.RLock()
+			subscriptions := maps.Clone(c.subscriptions)
+			conn := c.conn
+			c.mu.RUnlock()
+
+			if conn != nil {
+				// Block so that the subscriber is guaranteed that HandleReconnect is called
+				// only if we successfully sent the subscription to the connection
+				var result *json.RawMessage
+				err := conn.Call(ctx, "awe.proxy/UpdateSubscriptions", UpdateSubscriptionsParams{
+					Subscriptions: slices.Collect(maps.Keys(subscriptions)),
+				}, &result)
+
+				if err != nil {
+					slog.Error("failed to update subscriptions", "err", err)
+				} else if conn != lastConn {
+					for subscription, subscriber := range subscriptions {
+						subscriber.HandleReconnect(subscription)
+					}
+				}
+			}
+
+			lastConn = conn
 		}
 	}
 }
