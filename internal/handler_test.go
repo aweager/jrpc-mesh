@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -849,8 +850,14 @@ func TestWaitUntilRoutable_InvalidParams(t *testing.T) {
 func testPeerProxy(t *testing.T) (string, *Handler, func()) {
 	t.Helper()
 
-	// Create a temp socket file
-	socketPath := t.TempDir() + "/peer.sock"
+	// Create a temp socket file under a short tmp dir to stay within the
+	// macOS AF_UNIX sun_path length limit (~103 chars).
+	dir, err := os.MkdirTemp("/tmp", "jrpc")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socketPath := dir + "/p.sock"
 
 	handler := NewHandler()
 	listener, err := net.Listen("unix", socketPath)

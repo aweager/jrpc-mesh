@@ -1,5 +1,7 @@
 package mesh
 
+import "encoding/json"
+
 // CodeTimeout is the application-level error code for timeout errors.
 const CodeTimeout = 1
 
@@ -22,4 +24,24 @@ type AddPeerProxyParams struct {
 // RegisterAsPeerResult contains the peer's current routes.
 type RegisterAsPeerResult struct {
 	Prefixes []string `json:"prefixes"`
+}
+
+// Subscription identifies a pubsub subscription by publisher and topic.
+type Subscription struct {
+	Publisher string `json:"publisher"`
+	Topic     string `json:"topic"`
+}
+
+// UpdateSubscriptionsParams defines the parameters for awe.proxy/UpdateSubscriptions.
+// The list replaces the connection's full subscription set.
+type UpdateSubscriptionsParams struct {
+	Subscriptions []Subscription `json:"subscriptions"`
+}
+
+// PublishMessageParams defines the parameters for awe.proxy/PublishMessage and
+// the notification parameters for awe.proxy.client/ReceiveMessage.
+type PublishMessageParams struct {
+	Publisher string          `json:"publisher"`
+	Topic     string          `json:"topic"`
+	Payload   json.RawMessage `json:"payload"`
 }

@@ -54,6 +54,58 @@ have no timeout.
 
 This method returns an empty result.
 
+### awe.proxy/UpdateSubscriptions
+
+Replaces the full set of pubsub subscriptions for this client. Each
+subscription is a `{publisher, topic}` pair, and both fields are required.
+Behaves like `UpdateRoutes`: the provided list becomes the connection's
+complete subscription set.
+
+Published messages are received by subscribers as JSON RPC notifications on
+method `awe.proxy.client/ReceiveMessage`.
+
+Request parameters example:
+
+```json
+{
+    "subscriptions": [
+        {
+            "publisher": "origin.host/origin.service/",
+            "topic": "variable_updates"
+        }
+    ]
+}
+```
+
+This method returns an empty result.
+
+### awe.proxy/PublishMessage
+
+Publishes a message on a pubsub topic. Delivery is not guaranteed in the event
+that a subscriber is disconnected from the proxy at the time of the publish. The
+payload is any arbitrary JSON payload.
+
+Published messages are received by subscribers as JSON RPC notifications on
+method `awe.proxy.client/ReceiveMessage`.
+
+Request parameters example:
+
+```json
+{
+    "publisher": "origin.host/origin.service/",
+    "topic": "variable_updates",
+    "payload": {
+        "name": "var1",
+        "value": "value1"
+    }
+}
+```
+
+This method returns an empty result. Locally-originated published messages are
+also forwarded to all connected peer proxies, which deliver them to their own
+local subscribers. Messages received from a peer proxy are delivered to local
+subscribers only and are not re-forwarded.
+
 ### awe.proxy/AddPeerProxy
 
 Instructs this proxy instance to peer with another proxy instance. Routes will
@@ -93,3 +145,28 @@ Result example:
 
 The result contains all currently registered route prefixes (excluding routes
 owned by other peer connections).
+
+## awe.proxy.client methods
+
+These methods are implemented by the golang client, and optionally by clients in
+other languages. None are required for core functionality of the proxy.
+
+### awe.proxy.client/ReceiveMessage
+
+Called when a message was published matching a subscription made by this client
+using `awe.proxy/UpdateSubscriptions`.
+
+Request parameters example:
+
+```json
+{
+    "publisher": "origin.host/origin.service/",
+    "topic": "variable_updates",
+    "payload": {
+        "name": "var1",
+        "value": "value1"
+    }
+}
+```
+
+This method returns an empty result.

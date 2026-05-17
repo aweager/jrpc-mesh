@@ -15,8 +15,9 @@ import (
 
 // Handler implements jsonrpc2.Handler for the jrpc-mesh proxy.
 type Handler struct {
-	LocalRoutes *RouteTable // Routes from local services
-	PeerRoutes  *RouteTable // Routes from peer proxies
+	LocalRoutes   *RouteTable // Routes from local services
+	PeerRoutes    *RouteTable // Routes from peer proxies
+	Subscriptions *SubscriptionTable
 
 	peerMu      sync.RWMutex
 	peers       map[*jsonrpc2.Conn]bool   // Track peer proxy connections
@@ -26,10 +27,11 @@ type Handler struct {
 // NewHandler creates a new Handler with all necessary fields initialized.
 func NewHandler() *Handler {
 	h := &Handler{
-		LocalRoutes: NewRouteTable(),
-		PeerRoutes:  NewRouteTable(),
-		peers:       make(map[*jsonrpc2.Conn]bool),
-		peerSockets: make(map[string]*jsonrpc2.Conn),
+		LocalRoutes:   NewRouteTable(),
+		PeerRoutes:    NewRouteTable(),
+		Subscriptions: NewSubscriptionTable(),
+		peers:         make(map[*jsonrpc2.Conn]bool),
+		peerSockets:   make(map[string]*jsonrpc2.Conn),
 	}
 	// Only local route changes should notify peers
 	h.LocalRoutes.AddCallback(h.notifyPeers)
@@ -150,6 +152,10 @@ func (h *Handler) handleProxyMethod(ctx context.Context, conn *jsonrpc2.Conn, re
 		return h.handleAddPeerProxy(ctx, conn, req)
 	case "RegisterAsPeer":
 		return h.handleRegisterAsPeer(ctx, conn, req)
+	case "UpdateSubscriptions":
+		return h.handleUpdateSubscriptions(ctx, conn, req)
+	case "PublishMessage":
+		return h.handlePublishMessage(ctx, conn, req)
 	default:
 		if req.Notif {
 			return nil, nil
@@ -339,6 +345,7 @@ func (h *Handler) handleAddPeerProxy(ctx context.Context, conn *jsonrpc2.Conn, r
 		delete(h.peerSockets, socketPath)
 		h.peerMu.Unlock()
 		h.PeerRoutes.RemoveConn(peerConn)
+		h.Subscriptions.RemoveConn(peerConn)
 	}()
 
 	return struct{}{}, nil
@@ -365,6 +372,7 @@ func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn,
 		h.peerMu.Unlock()
 		// Clean up peer routes for this connection
 		h.PeerRoutes.RemoveConn(conn)
+		h.Subscriptions.RemoveConn(conn)
 	}()
 
 	// Return our current local routes (not peer routes)
@@ -372,6 +380,69 @@ func (h *Handler) handleRegisterAsPeer(ctx context.Context, conn *jsonrpc2.Conn,
 	return mesh.RegisterAsPeerResult{
 		Prefixes: prefixes,
 	}, nil
+}
+
+func (h *Handler) handleUpdateSubscriptions(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+	var params mesh.UpdateSubscriptionsParams
+	if err := json.Unmarshal(*req.Params, &params); err != nil {
+		if req.Notif {
+			return nil, nil
+		}
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInvalidParams,
+			Message: "invalid params: " + err.Error(),
+		}
+	}
+
+	h.Subscriptions.Update(conn, params.Subscriptions)
+
+	if req.Notif {
+		return nil, nil
+	}
+	return struct{}{}, nil
+}
+
+func (h *Handler) handlePublishMessage(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (any, error) {
+	var params mesh.PublishMessageParams
+	if err := json.Unmarshal(*req.Params, &params); err != nil {
+		if req.Notif {
+			return nil, nil
+		}
+		return nil, &jsonrpc2.Error{
+			Code:    jsonrpc2.CodeInvalidParams,
+			Message: "invalid params: " + err.Error(),
+		}
+	}
+
+	// Deliver to local subscribers.
+	subscribers := h.Subscriptions.Subscribers(mesh.Subscription{
+		Publisher: params.Publisher,
+		Topic:     params.Topic,
+	})
+	for _, sub := range subscribers {
+		sub.Notify(ctx, "awe.proxy.client/ReceiveMessage", params)
+	}
+
+	// If this publish originated locally (not from a peer), forward to all peers.
+	h.peerMu.RLock()
+	fromPeer := h.peers[conn]
+	var peers []*jsonrpc2.Conn
+	if !fromPeer {
+		peers = make([]*jsonrpc2.Conn, 0, len(h.peers))
+		for p := range h.peers {
+			peers = append(peers, p)
+		}
+	}
+	h.peerMu.RUnlock()
+
+	for _, p := range peers {
+		p.Notify(ctx, "awe.proxy/PublishMessage", params)
+	}
+
+	if req.Notif {
+		return nil, nil
+	}
+	return struct{}{}, nil
 }
 
 // notifyPeers sends current local routes to all connected peers.
